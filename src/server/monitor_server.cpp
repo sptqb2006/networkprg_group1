@@ -1,5 +1,6 @@
 // monitor_server — Main server: accepts agents + viewers, ncurses dashboard,
 // HTTP API, alerting, state persistence, stale detection.
+// release note: final product.
 #include "../../include/alerting.hpp"
 #include "../../include/ansi_viewer.hpp"
 #include "../../include/dashboard.hpp"
