@@ -1,6 +1,3 @@
-// viewer_cli — Monitor query client. Connects to server viewer port,
-// sends CMD queries, displays results in ncurses UI.
-// maintenance note: bug-fix and optimization pass.
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>

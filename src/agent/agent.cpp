@@ -1,7 +1,3 @@
-// agent — Collector + sender + resilient TCP connection to monitor_server.
-// maintenance note: bug-fix and optimization pass.
-// Reads CPU%, RAM%, Disk%, net I/O, load, procs from /proc every N seconds,
-// encodes as length-prefixed JSON, sends over persistent TCP connection.
 #include "../../include/json_helper.hpp"
 #include "../../include/metrics_collector.hpp"
 #include "../../include/net_framing.hpp"
