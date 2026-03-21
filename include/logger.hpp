@@ -1,13 +1,5 @@
 #pragma once
-/*
- * logger.hpp — Thread-safe file logger with log levels and size-based rotation.
- *
- * Usage:
- *   Logger::init("data/monitor.log", LogLevel::INFO, 10*1024*1024);
- *   LOG_INFO("Server started on port " + std::to_string(port));
- *   LOG_WARN("Auth failed for " + ip);
- *   LOG_ERROR("Failed to bind socket");
- */
+// Thread-safe file logger with size-based rotation.
 #include <ctime>
 #include <fstream>
 #include <mutex>
@@ -43,10 +35,8 @@ public:
     std::lock_guard<std::mutex> lk(mtx_);
     if (!out_.is_open()) return;
 
-    // Rotate if too large
     checkRotate();
 
-    // Timestamp
     char ts[32];
     time_t now = time(nullptr);
     std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
@@ -62,13 +52,11 @@ private:
   Logger() = default;
 
   void checkRotate() {
-    // Check size periodically (every 256 writes to avoid stat overhead)
     if ((++writeCount_ & 0xFF) != 0) return;
     try {
       if (std::filesystem::file_size(path_) >= maxBytes_) {
         out_.close();
         std::string rotated = path_ + ".1";
-        // Remove old .1 if exists
         std::filesystem::remove(rotated);
         std::filesystem::rename(path_, rotated);
         out_.open(path_, std::ios::app);
@@ -84,7 +72,6 @@ private:
   uint64_t      writeCount_ = 0;
 };
 
-// Convenience macros
 #define LOG_DEBUG(msg) ::monitor::Logger::instance().log(::monitor::LogLevel::DEBUG, (msg))
 #define LOG_INFO(msg)  ::monitor::Logger::instance().log(::monitor::LogLevel::INFO,  (msg))
 #define LOG_WARN(msg)  ::monitor::Logger::instance().log(::monitor::LogLevel::WARN,  (msg))

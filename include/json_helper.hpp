@@ -1,8 +1,5 @@
 #pragma once
-/*
- * Minimal JSON encoder/decoder for monitor metrics.
- * Fixed: proper string escaping (", \, \n, \r, \t), escaped char decoding.
- */
+// Minimal JSON encoder/decoder for monitor metric payloads.
 #include <sstream>
 #include <stdexcept>
 #include <string>

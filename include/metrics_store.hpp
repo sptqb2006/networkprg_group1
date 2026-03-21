@@ -1,9 +1,5 @@
 #pragma once
-/*
- * Thread-safe per-host metric store.
- * v2: Added STALE status, markStaleOffline(), query methods for viewer
- * protocol.
- */
+// Thread-safe per-host metric store with history, persistence, and JSON query methods.
 #include "protocol.hpp"
 #include "thresholds.hpp"
 #include <algorithm>
@@ -20,18 +16,13 @@
 
 namespace monitor {
 
-// ── Serialization helpers
-// ─────────────────────────────────────────────────────
 inline std::string pipeEncode(const std::string &s) {
   std::string out;
   out.reserve(s.size());
   for (char c : s) {
-    if (c == '\\')
-      out += "\\\\";
-    else if (c == '|')
-      out += "\\P";
-    else
-      out += c;
+    if (c == '\\')     out += "\\\\";
+    else if (c == '|') out += "\\P";
+    else               out += c;
   }
   return out;
 }
@@ -42,44 +33,30 @@ inline std::string pipeDecode(const std::string &s) {
   for (size_t i = 0; i < s.size(); i++) {
     if (s[i] == '\\' && i + 1 < s.size()) {
       i++;
-      if (s[i] == '\\')
-        out += '\\';
-      else if (s[i] == 'P')
-        out += '|';
-      else {
-        out += '\\';
-        out += s[i];
-      }
+      if (s[i] == '\\')    out += '\\';
+      else if (s[i] == 'P') out += '|';
+      else { out += '\\'; out += s[i]; }
     } else
       out += s[i];
   }
   return out;
 }
 
-// JSON string escape (minimal)
 inline std::string jsonStr(const std::string &s) {
   std::string out;
   out += '"';
   for (char c : s) {
-    if (c == '"')
-      out += "\\\"";
-    else if (c == '\\')
-      out += "\\\\";
-    else if (c == '\n')
-      out += "\\n";
-    else if (c == '\r')
-      out += "\\r";
-    else if (c == '\t')
-      out += "\\t";
-    else
-      out += c;
+    if (c == '"')       out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else                out += c;
   }
   out += '"';
   return out;
 }
 
-// ── Data structures
-// ───────────────────────────────────────────────────────────
 struct HistorySample {
   time_t ts;
   float cpu, ram, disk;
@@ -100,13 +77,9 @@ struct HostState {
   int coreCount = 0;
 
   void push(const MetricPayload &p) {
-    cpu = p.cpu;
-    ram = p.ram;
-    disk = p.disk;
-    netRxKB = p.netRxKB;
-    netTxKB = p.netTxKB;
-    loadAvg = p.loadAvg;
-    procCount = p.procCount;
+    cpu = p.cpu; ram = p.ram; disk = p.disk;
+    netRxKB = p.netRxKB; netTxKB = p.netTxKB;
+    loadAvg = p.loadAvg; procCount = p.procCount;
     lastSeen = p.timestamp;
     cores = p.cores;
     coreCount = (int)p.cores.size();
@@ -127,8 +100,6 @@ struct LogEvent {
   std::string detail;
 };
 
-// ── MetricsStore
-// ──────────────────────────────────────────────────────────────
 class MetricsStore {
 public:
   std::pair<HostStatus, HostStatus> upsert(const MetricPayload &p, const Thresholds &thresh) {
@@ -150,12 +121,8 @@ public:
                       : HostStatus::ONLINE;
 
     LogEvent ev;
-    ev.ts = p.timestamp;
-    ev.host = p.host;
-    ev.ip = p.ip;
-    ev.cpu = p.cpu;
-    ev.ram = p.ram;
-    ev.disk = p.disk;
+    ev.ts = p.timestamp; ev.host = p.host; ev.ip = p.ip;
+    ev.cpu = p.cpu; ev.ram = p.ram; ev.disk = p.disk;
     if (alert) {
       ev.type = LogEventType::ALERT;
       if (p.cpu >= thresh.getCPU(p.host))
@@ -174,15 +141,11 @@ public:
   void setOnline(const std::string &host, const std::string &ip, int fd) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto &h = hosts_[host];
-    h.name = host;
-    h.ip = ip;
-    h.fd = fd;
+    h.name = host; h.ip = ip; h.fd = fd;
     h.status = HostStatus::ONLINE;
     h.lastSeen = time(nullptr);
     LogEvent ev;
-    ev.ts = time(nullptr);
-    ev.host = host;
-    ev.ip = ip;
+    ev.ts = time(nullptr); ev.host = host; ev.ip = ip;
     ev.type = LogEventType::CONNECT;
     pushLog(ev);
   }
@@ -195,14 +158,12 @@ public:
       it->second.fd = -1;
     }
     LogEvent ev;
-    ev.ts = time(nullptr);
-    ev.host = host;
+    ev.ts = time(nullptr); ev.host = host;
     ev.ip = (it != hosts_.end() ? it->second.ip : "");
     ev.type = LogEventType::DISCONNECT;
     pushLog(ev);
   }
 
-  // Called by stale-checker thread every few seconds
   // Returns {online_count, stale_count}
   std::pair<int,int> markStaleOffline(int staleSec, int offlineSec) {
     std::lock_guard<std::mutex> lk(mtx_);
@@ -241,7 +202,6 @@ public:
     return {online, stale};
   }
 
-  // Update lastSeen without a full metric push (heartbeat)
   void touchLastSeen(const std::string &host) {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = hosts_.find(host);
@@ -263,24 +223,19 @@ public:
     return {log_.begin(), log_.end()};
   }
 
-  // ── Query helpers for viewer protocol ────────────────────────────────────
   std::string hostsJson() const {
     std::lock_guard<std::mutex> lk(mtx_);
     std::string o = "[";
     bool first = true;
-    // Sort by status severity then name
     std::vector<const HostState *> sorted;
-    for (auto &[k, h] : hosts_)
-      sorted.push_back(&h);
+    for (auto &[k, h] : hosts_) sorted.push_back(&h);
     std::sort(sorted.begin(), sorted.end(),
               [](const HostState *a, const HostState *b) {
-                if (a->status != b->status)
-                  return (int)a->status < (int)b->status;
+                if (a->status != b->status) return (int)a->status < (int)b->status;
                 return a->name < b->name;
               });
     for (auto *h : sorted) {
-      if (!first)
-        o += ',';
+      if (!first) o += ',';
       first = false;
       char buf[256];
       snprintf(buf, sizeof(buf),
@@ -299,21 +254,18 @@ public:
   std::string historyJson(const std::string &host, int n) const {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = hosts_.find(host);
-    if (it == hosts_.end())
-      return "[]";
+    if (it == hosts_.end()) return "[]";
     const auto &hist = it->second.history;
     int start = std::max(0, (int)hist.size() - n);
     std::string o = "[";
     for (int i = start; i < (int)hist.size(); i++) {
-      if (i > start)
-        o += ',';
+      if (i > start) o += ',';
       const auto &s = hist[i];
       char buf[256];
       snprintf(buf, sizeof(buf),
                "{\"ts\":%lld,\"cpu\":%.1f,\"ram\":%.1f,\"disk\":%.1f,"
                "\"rx\":%.1f,\"tx\":%.1f,\"load\":%.2f}",
-               (long long)s.ts, s.cpu, s.ram, s.disk, s.netRxKB, s.netTxKB,
-               s.loadAvg);
+               (long long)s.ts, s.cpu, s.ram, s.disk, s.netRxKB, s.netTxKB, s.loadAvg);
       o += buf;
     }
     o += ']';
@@ -324,11 +276,9 @@ public:
     std::lock_guard<std::mutex> lk(mtx_);
     int start = std::max(0, (int)log_.size() - n);
     std::string o = "[";
-    static const char *typeNames[] = {"CONNECT", "METRIC", "ALERT",
-                                      "DISCONNECT", "STALE"};
+    static const char *typeNames[] = {"CONNECT", "METRIC", "ALERT", "DISCONNECT", "STALE"};
     for (int i = start; i < (int)log_.size(); i++) {
-      if (i > start)
-        o += ',';
+      if (i > start) o += ',';
       const auto &ev = log_[i];
       int ti = std::min((int)ev.type, 4);
       char buf[512];
@@ -344,20 +294,14 @@ public:
     return o;
   }
 
-  // ── Persistence ──────────────────────────────────────────────────────────
-
-  // Configure the directory where per-host JSONL history files are stored.
   void setHistoryDir(const std::string &dir, int maxLines) {
     std::lock_guard<std::mutex> lk(mtx_);
     historyDir_ = dir;
     historyMaxLines_ = maxLines;
-    // Create directory if it does not exist
     std::filesystem::create_directories(dir);
   }
 
-  // Pre-load up to `n` recent history samples per host from JSONL files in
-  // historyDir_. Files are named <host>.jsonl, one JSON object per line with
-  // fields: ts, cpu, ram, disk, rx, tx, load, procs.
+  // Load recent history samples per host from JSONL files (<host>.jsonl)
   void loadHistoryFiles(int n) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (historyDir_.empty()) return;
@@ -372,7 +316,6 @@ public:
       std::string line;
       while (std::getline(in, line)) {
         if (line.empty()) continue;
-        // Minimal parse: extract numeric fields by key
         auto getNum = [&](const std::string &key) -> double {
           auto pos = line.find("\"" + key + "\":");
           if (pos == std::string::npos) return 0.0;
@@ -392,7 +335,6 @@ public:
           samples.push_back(s);
         } catch (...) {}
       }
-      // Keep only last n samples
       int start = std::max(0, (int)samples.size() - n);
       auto &h = hosts_[host];
       if (h.name.empty()) h.name = host;
@@ -404,12 +346,10 @@ public:
     }
   }
 
-
   bool saveToFile(const std::string &path) const {
     std::lock_guard<std::mutex> lk(mtx_);
     std::ofstream out(path, std::ios::trunc);
-    if (!out)
-      return false;
+    if (!out) return false;
     for (const auto &[n, h] : hosts_) {
       out << "HOST|" << pipeEncode(h.name) << "|" << pipeEncode(h.ip) << "|"
           << h.cpu << "|" << h.ram << "|" << h.disk << "|"
@@ -426,19 +366,16 @@ public:
   bool loadFromFile(const std::string &path) {
     std::lock_guard<std::mutex> lk(mtx_);
     std::ifstream in(path);
-    if (!in)
-      return false;
+    if (!in) return false;
     hosts_.clear();
     log_.clear();
     std::string line;
     while (std::getline(in, line)) {
-      if (line.empty())
-        continue;
+      if (line.empty()) continue;
       std::vector<std::string> cols;
       std::stringstream ss(line);
       std::string tok;
-      while (std::getline(ss, tok, '|'))
-        cols.push_back(tok);
+      while (std::getline(ss, tok, '|')) cols.push_back(tok);
 
       if (cols.size() >= 8 && cols[0] == "HOST") {
         HostState h;
@@ -449,13 +386,9 @@ public:
           h.ram = std::stof(cols[4]);
           h.disk = std::stof(cols[5]);
           h.lastSeen = (time_t)std::stoll(cols[6]);
-          // Restore as STALE regardless of saved status:
-          // real status re-evaluated when new metric arrives
+          // Restored hosts start as STALE; real status re-evaluated on next metric
           h.status = HostStatus::STALE;
-        } catch (...) {
-          // Bad data — skip this host entry
-          continue;
-        }
+        } catch (...) { continue; }
         h.fd = -1;
         hosts_[h.name] = h;
       } else if (cols.size() >= 9 && cols[0] == "LOG") {
@@ -465,17 +398,13 @@ public:
           ev.host = pipeDecode(cols[2]);
           ev.ip = pipeDecode(cols[3]);
           int ti = std::stoi(cols[4]);
-          // Clamp to valid enum range
-          if (ti < 0 || ti > 4)
-            ti = 0;
+          if (ti < 0 || ti > 4) ti = 0;
           ev.type = (LogEventType)ti;
           ev.cpu = std::stof(cols[5]);
           ev.ram = std::stof(cols[6]);
           ev.disk = std::stof(cols[7]);
           ev.detail = pipeDecode(cols[8]);
-        } catch (...) {
-          continue; // Skip bad log entries
-        }
+        } catch (...) { continue; }
         log_.push_back(ev);
       }
     }

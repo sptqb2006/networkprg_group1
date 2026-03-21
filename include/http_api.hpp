@@ -1,17 +1,6 @@
 #pragma once
-/*
- * http_api.hpp — Minimal single-threaded HTTP/1.1 API server.
- *
- * Endpoints:
- *   GET /api/hosts            → JSON array of all hosts
- *   GET /api/history/<host>   → JSON history (query: ?n=30)
- *   GET /api/log              → JSON event log (query: ?n=50)
- *   GET /api/stats            → Server internal metrics JSON
- *   GET /metrics              → Prometheus text format
- *   GET /healthz              → 200 OK plain text
- *
- * No external deps — raw POSIX sockets only.
- */
+// Minimal HTTP/1.1 API server for monitoring data.
+// Endpoints: /api/hosts, /api/history/<host>, /api/log, /api/stats, /metrics, /healthz
 #include "logger.hpp"
 #include "metrics_store.hpp"
 #include "server_stats.hpp"
@@ -29,7 +18,6 @@
 
 namespace monitor {
 
-// ── Tiny HTTP helpers ────────────────────────────────────────────────────────
 inline std::string httpResponse(int code, const std::string &ct,
                                 const std::string &body) {
     const char *reason = (code == 200) ? "OK"
@@ -49,7 +37,6 @@ inline std::string httpJson(const std::string &json) {
     return httpResponse(200, "application/json", json);
 }
 
-// Parse URL path and query string from first request line
 inline void parseRequestLine(const std::string &line,
                               std::string &method,
                               std::string &path,
@@ -67,7 +54,6 @@ inline void parseRequestLine(const std::string &line,
     else { path = url.substr(0, q); query = url.substr(q + 1); }
 }
 
-// Extract a query param value: ?n=50 → getParam("n","50") = "50"
 inline std::string getParam(const std::string &query, const std::string &key,
                              const std::string &def = "") {
     std::string needle = key + "=";
@@ -78,9 +64,7 @@ inline std::string getParam(const std::string &query, const std::string &key,
     return (end == std::string::npos) ? query.substr(pos) : query.substr(pos, end - pos);
 }
 
-// ── HTTP request handler ────────────────────────────────────────────────────
 inline void handleHttpClient(int fd, MetricsStore &store, ServerStats &stats) {
-    // Read request (max 8KB header)
     char buf[8192];
     int total = 0;
     struct timeval tv{}; tv.tv_sec = 5;
@@ -95,11 +79,9 @@ inline void handleHttpClient(int fd, MetricsStore &store, ServerStats &stats) {
     if (total == 0) { close(fd); return; }
     buf[total] = '\0';
 
-    // Parse first line
     std::string req(buf);
     auto nl = req.find('\n');
     std::string firstLine = (nl == std::string::npos) ? req : req.substr(0, nl);
-    // Strip \r
     if (!firstLine.empty() && firstLine.back() == '\r') firstLine.pop_back();
 
     std::string method, path, query;
@@ -115,18 +97,14 @@ inline void handleHttpClient(int fd, MetricsStore &store, ServerStats &stats) {
 
     if (path == "/healthz") {
         resp = httpResponse(200, "text/plain", "ok\n");
-
     } else if (path == "/metrics") {
         resp = httpResponse(200, "text/plain; version=0.0.4", stats.toPrometheus());
-
     } else if (path == "/api/stats") {
         resp = httpJson(stats.toJson());
-
     } else if (path == "/api/hosts") {
         resp = httpJson(store.hostsJson());
-
     } else if (path.rfind("/api/history/", 0) == 0) {
-        std::string host = path.substr(13); // after "/api/history/"
+        std::string host = path.substr(13);
         int n = 30;
         std::string ns = getParam(query, "n", "30");
         try { n = std::stoi(ns); } catch(...) {}
@@ -135,14 +113,12 @@ inline void handleHttpClient(int fd, MetricsStore &store, ServerStats &stats) {
             resp = httpResponse(400, "application/json", "{\"error\":\"missing host\"}");
         else
             resp = httpJson(store.historyJson(host, n));
-
     } else if (path == "/api/log") {
         int n = 50;
         std::string ns = getParam(query, "n", "50");
         try { n = std::stoi(ns); } catch(...) {}
         n = std::max(1, std::min(n, 1000));
         resp = httpJson(store.logJson(n));
-
     } else {
         resp = httpResponse(404, "application/json", "{\"error\":\"not found\"}");
     }
@@ -151,13 +127,11 @@ inline void handleHttpClient(int fd, MetricsStore &store, ServerStats &stats) {
     close(fd);
 }
 
-// ── HTTP API Server (runs in its own thread) ─────────────────────────────────
 class HttpApiServer {
 public:
     HttpApiServer(MetricsStore &store, ServerStats &stats)
         : store_(store), stats_(stats) {}
 
-    // Start listening on given port; returns false if bind fails
     bool start(uint16_t port) {
         fd_ = socket(AF_INET, SOCK_STREAM, 0);
         if (fd_ < 0) return false;
@@ -194,8 +168,6 @@ private:
                 if (errno == EINTR || errno == EAGAIN) continue;
                 break;
             }
-            // Handle inline (one request at a time is fine for monitoring API)
-            // Use a short-lived thread to avoid blocking accept
             std::thread([this, client]() {
                 handleHttpClient(client, store_, stats_);
             }).detach();

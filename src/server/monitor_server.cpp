@@ -1,15 +1,5 @@
-/*
- * monitor_server.cpp  v4
- *
- * Fixes vs v3:
- *  - Proper thread lifecycle: joinable threads stored in vector, graceful shutdown
- *  - Race condition fix: g_fdHost/g_fdIP always accessed under g_fdMtx
- *  - Internal server metrics (server_stats.hpp)
- *  - HTTP API + Prometheus endpoint (http_api.hpp) on configurable port
- *  - Protocol version field in agent handshake
- *  - Heartbeat/ping messages handled gracefully
- *  - Alert counter wired to ServerStats
- */
+// monitor_server — Main server: accepts agents + viewers, ncurses dashboard,
+// HTTP API, alerting, state persistence, stale detection.
 #include "../../include/alerting.hpp"
 #include "../../include/ansi_viewer.hpp"
 #include "../../include/dashboard.hpp"
@@ -45,24 +35,21 @@
 
 using namespace monitor;
 
-// ── Globals ──────────────────────────────────────────────────────────────────
 static MetricsStore        g_store;
 static Thresholds          g_thresh;
 static ServerStats         g_stats;
 static std::atomic<bool>   g_running{true};
 
-// fd → host/IP map; always access under g_fdMtx
+// fd -> host/IP map (access under g_fdMtx)
 static std::mutex                          g_fdMtx;
 static std::unordered_map<int,std::string> g_fdHost;
 static std::unordered_map<int,std::string> g_fdIP;
 
-// Thread registry for graceful shutdown
 static std::mutex              g_threadMtx;
 static std::vector<std::thread> g_threads;
 
 static Alerter *g_alerter = nullptr;
 
-// ── Config ───────────────────────────────────────────────────────────────────
 struct ServerConfig {
   int  maxAgentsPerIP     = 2;
   int  backupIntervalSec  = 10;
@@ -76,11 +63,10 @@ struct ServerConfig {
   std::string logLevel    = "INFO";
   std::string historyDir  = "data/history";
   int  historyMaxLines    = 10000;
-  uint16_t httpPort       = 8786;   // 0 = disable HTTP API
+  uint16_t httpPort       = 8786;
 };
 static ServerConfig g_cfg;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
 static std::string trim(const std::string &s) {
   auto b = s.find_first_not_of(" \t\r\n"), e = s.find_last_not_of(" \t\r\n");
   return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
@@ -127,13 +113,11 @@ static bool validateStatePath(const std::string &path) {
   } catch (...) { return false; }
 }
 
-// Spawn a joinable worker thread and register it
 static void spawnThread(std::function<void()> fn) {
   std::lock_guard<std::mutex> lk(g_threadMtx);
   g_threads.emplace_back(std::move(fn));
 }
 
-// Join all registered threads (call after g_running = false)
 static void joinAllThreads() {
   std::lock_guard<std::mutex> lk(g_threadMtx);
   for (auto &t : g_threads)
@@ -141,7 +125,6 @@ static void joinAllThreads() {
   g_threads.clear();
 }
 
-// ── Client handler ───────────────────────────────────────────────────────────
 static void handleClient(int fd, std::string ip) {
   net::setRecvTimeout(fd, RECV_TIMEOUT_SEC);
   std::string hostName;
@@ -154,7 +137,6 @@ static void handleClient(int fd, std::string ip) {
     try {
       auto obj = json::decode(msg);
 
-      // ── Auth check ──────────────────────────────────────────────────────
       if (!authenticated) {
         bool ok = obj.count("auth") && obj["auth"].str == g_cfg.authToken;
         if (!ok) {
@@ -165,18 +147,15 @@ static void handleClient(int fd, std::string ip) {
           return;
         }
         authenticated = true;
-        continue; // auth message only, no metric yet
+        continue;
       }
 
-      // ── Heartbeat / ping ────────────────────────────────────────────────
       if (obj.count("type") && obj["type"].str == "heartbeat") {
-        // Just update lastSeen without metric push
         if (!hostName.empty())
           g_store.touchLastSeen(hostName);
         continue;
       }
 
-      // ── Metric payload ──────────────────────────────────────────────────
       std::string host = obj.count("host") ? obj["host"].str : "unknown";
       if (host.empty() || host == "unknown") {
         g_stats.msgsDropped++;
@@ -223,7 +202,6 @@ static void handleClient(int fd, std::string ip) {
     }
   }
 
-  // Cleanup: remove from fd maps under lock
   {
     std::lock_guard<std::mutex> lk(g_fdMtx);
     if (!hostName.empty()) {
@@ -237,14 +215,13 @@ static void handleClient(int fd, std::string ip) {
   close(fd);
 }
 
-// ── Background loops ─────────────────────────────────────────────────────────
 static void persistLoop() {
   while (g_running) {
     g_store.saveToFile(g_cfg.stateFile);
     for (int i = 0; i < g_cfg.backupIntervalSec * 10 && g_running; i++)
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
-  g_store.saveToFile(g_cfg.stateFile); // final flush
+  g_store.saveToFile(g_cfg.stateFile);
   LOG_INFO("persistLoop: final save complete");
 }
 
@@ -274,7 +251,6 @@ static void renderLoop(ui::Dashboard &dash) {
   }
 }
 
-// ── Viewer handler ───────────────────────────────────────────────────────────
 static void viewerHandler(int fd) {
   g_stats.viewerConnects++;
   struct timeval tv{}; tv.tv_sec = 2;
@@ -314,7 +290,7 @@ static void viewerHandler(int fd) {
     }
   }
 
-  // Legacy push mode: render ASCII frame every 2s
+  // Legacy push mode: stream ANSI frames every 2s
   tv.tv_sec = 0; tv.tv_usec = 0;
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   while (g_running) {
@@ -327,7 +303,6 @@ static void viewerHandler(int fd) {
   close(fd);
 }
 
-// ── Accept loops ─────────────────────────────────────────────────────────────
 static int createListenSocket(uint16_t port) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
@@ -361,7 +336,7 @@ static void acceptLoop(int serverFd) {
       int count = 0;
       for (const auto &[_, v] : g_fdIP) if (v == ip) count++;
       if (count >= g_cfg.maxAgentsPerIP) reject = true;
-      else g_fdIP[fd] = ip; // pre-register so IP limit counts correctly
+      else g_fdIP[fd] = ip;
     }
     if (reject) {
       net::sendMsg(fd, "{\"error\":\"ip_limit\"}");
@@ -369,8 +344,6 @@ static void acceptLoop(int serverFd) {
       close(fd);
       continue;
     }
-    // Detach individual client handler threads — OK because each
-    // cleans up its own fd. Server lifecycle managed separately.
     std::thread(handleClient, fd, ip).detach();
   }
 }
@@ -387,10 +360,8 @@ static void viewerAcceptLoop(int vfd) {
   }
 }
 
-// ── Signal handler ───────────────────────────────────────────────────────────
 static void sigHandler(int) { g_running = false; }
 
-// ── main ─────────────────────────────────────────────────────────────────────
 int main(int argc, char **argv) {
   uint16_t port = DEFAULT_PORT, vport = DEFAULT_VPORT;
   std::string cfgPath = "config/thresholds.conf",
@@ -413,7 +384,6 @@ int main(int argc, char **argv) {
   g_cfg    = loadServerConfig(serverCfgPath);
   g_stats.reset();
 
-  // Validate state file path
   if (!validateStatePath(g_cfg.stateFile)) {
     std::cerr << "[ERROR] STATE_FILE path outside working dir: " << g_cfg.stateFile << "\n";
     g_cfg.stateFile = "data/monitor_state.db";
@@ -423,7 +393,6 @@ int main(int argc, char **argv) {
     if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path());
   } catch (...) {}
 
-  // Logger
   {
     LogLevel lv = LogLevel::INFO;
     if      (g_cfg.logLevel == "DEBUG") lv = LogLevel::DEBUG;
@@ -431,34 +400,29 @@ int main(int argc, char **argv) {
     else if (g_cfg.logLevel == "ERROR") lv = LogLevel::ERROR;
     Logger::instance().init(g_cfg.logFile, lv);
   }
-  LOG_INFO("monitor_server v4 starting — port=" + std::to_string(port)
+  LOG_INFO("monitor_server starting — port=" + std::to_string(port)
            + " vport=" + std::to_string(vport)
            + " http=" + std::to_string(g_cfg.httpPort));
 
-  // Alerter
   static Alerter alerter({g_cfg.alertWebhookUrl, g_cfg.alertCooldownSec,
                            !g_cfg.alertWebhookUrl.empty()});
   g_alerter = &alerter;
   if (!g_cfg.alertWebhookUrl.empty())
-    LOG_INFO("alerting: webhook → " + g_cfg.alertWebhookUrl);
+    LOG_INFO("alerting: webhook -> " + g_cfg.alertWebhookUrl);
 
-  // Restore state + history
   g_store.loadFromFile(g_cfg.stateFile);
   g_store.setHistoryDir(g_cfg.historyDir, g_cfg.historyMaxLines);
   g_store.loadHistoryFiles(500);
 
-  // Signals
   signal(SIGPIPE, SIG_IGN);
   signal(SIGINT,  sigHandler);
   signal(SIGTERM, sigHandler);
 
-  // Sockets
   int serverFd = createListenSocket(port);
   if (serverFd < 0) { LOG_ERROR("bind failed on port " + std::to_string(port)); return 1; }
   int viewerFd = createListenSocket(vport);
   if (viewerFd < 0) { LOG_ERROR("bind failed on vport " + std::to_string(vport)); return 1; }
 
-  // HTTP API
   static HttpApiServer httpApi(g_store, g_stats);
   if (g_cfg.httpPort > 0) {
     if (httpApi.start(g_cfg.httpPort))
@@ -467,7 +431,6 @@ int main(int argc, char **argv) {
       LOG_WARN("HTTP API failed to bind on port " + std::to_string(g_cfg.httpPort));
   }
 
-  // Background threads (joinable, tracked)
   spawnThread([serverFd]() { acceptLoop(serverFd); });
   spawnThread([viewerFd]() { viewerAcceptLoop(viewerFd); });
   spawnThread([]() { persistLoop(); });
@@ -475,11 +438,9 @@ int main(int argc, char **argv) {
 
   LOG_INFO("all threads started, entering render loop");
 
-  // Dashboard (blocks until q/Q or signal)
   ui::Dashboard dash; dash.init();
   renderLoop(dash);
 
-  // Graceful shutdown
   LOG_INFO("shutting down...");
   g_running = false;
   shutdown(serverFd, SHUT_RDWR); close(serverFd);

@@ -1,16 +1,11 @@
 #pragma once
-/*
- * Metrics collector — reads /proc/stat, /proc/meminfo, statvfs(),
- *                     /proc/net/dev, /proc/loadavg
- * Fixed: async CPU measurement so collect() doesn't block 500ms.
- */
+// Metrics collector for Linux — reads /proc/stat, /proc/meminfo, statvfs(),
+// /proc/net/dev, /proc/loadavg. Async CPU sampling via background thread.
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <fstream>
 #include <mutex>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <sys/statvfs.h>
 #include <thread>
@@ -23,10 +18,10 @@ struct Sample {
   float ram = 0.0f;
   float disk = 0.0f;
   std::vector<float> cores;
-  float netRxKB = 0.0f;  // KB received since last sample
-  float netTxKB = 0.0f;  // KB transmitted since last sample
-  float loadAvg = 0.0f;  // 1-minute load average
-  int procCount = 0;     // total process/thread count
+  float netRxKB = 0.0f;
+  float netTxKB = 0.0f;
+  float loadAvg = 0.0f;
+  int procCount = 0;
 };
 
 struct CpuState {
@@ -63,9 +58,7 @@ inline float cpuPercent(const CpuState &p, const CpuState &c) {
   return 100.0f * (1.0f - (float)dI / (float)dT);
 }
 
-// ── Async CPU sampler ────────────────────────────────────────────────────────
-// Runs a background thread that measures CPU every 1s.
-// collect() reads cached results without blocking.
+// Background thread measures CPU every ~900ms; read() returns cached result.
 class AsyncCpuSampler {
 public:
   AsyncCpuSampler() {
@@ -78,7 +71,11 @@ public:
     if (thread_.joinable()) thread_.join();
   }
 
-  // Returns latest (total, per-core) CPU percentages — non-blocking
+  AsyncCpuSampler(const AsyncCpuSampler &) = delete;
+  AsyncCpuSampler &operator=(const AsyncCpuSampler &) = delete;
+  AsyncCpuSampler(AsyncCpuSampler &&) = delete;
+  AsyncCpuSampler &operator=(AsyncCpuSampler &&) = delete;
+
   std::pair<float, std::vector<float>> read() {
     std::lock_guard<std::mutex> lk(mtx_);
     return {totalCpu_, coreCpu_};
@@ -89,8 +86,8 @@ private:
     while (running_) {
       std::this_thread::sleep_for(std::chrono::milliseconds(900));
       auto cur = readAllCpuStates();
-      if (cur.empty() || prev_.empty()) { prev_ = cur; continue; }
       std::lock_guard<std::mutex> lk(mtx_);
+      if (cur.empty() || prev_.empty()) { prev_ = cur; continue; }
       totalCpu_ = cpuPercent(prev_[0], cur[0]);
       coreCpu_.clear();
       size_t n = std::min(prev_.size(), cur.size());
@@ -108,7 +105,6 @@ private:
   std::vector<float> coreCpu_;
 };
 
-// ── RAM ──────────────────────────────────────────────────────────────────────
 inline float ramPercent() {
   std::ifstream f("/proc/meminfo");
   unsigned long long total=0, free_=0, buffers=0, cached=0, sreclaimable=0, shmem=0;
@@ -130,7 +126,6 @@ inline float ramPercent() {
   return 100.0f * (float)used / (float)total;
 }
 
-// ── Disk ─────────────────────────────────────────────────────────────────────
 inline float diskPercent(const std::string &path = "/") {
   struct statvfs st;
   if (statvfs(path.c_str(), &st) != 0) return 0.0f;
@@ -140,24 +135,21 @@ inline float diskPercent(const std::string &path = "/") {
   return 100.0f * (1.0f - (float)avail / (float)total);
 }
 
-// ── Network I/O ──────────────────────────────────────────────────────────────
 struct NetRaw { unsigned long long rx=0, tx=0; };
 
 inline NetRaw readNetRaw() {
   NetRaw r;
   std::ifstream f("/proc/net/dev");
   std::string line;
-  std::getline(f, line); std::getline(f, line); // skip 2 header lines
+  std::getline(f, line); std::getline(f, line); // skip headers
   while (std::getline(f, line)) {
-    // Format: "  eth0:  rx_bytes ... tx_bytes ..."
     auto colon = line.find(':');
     if (colon == std::string::npos) continue;
     std::string iface = line.substr(0, colon);
-    // trim
     auto b = iface.find_first_not_of(" \t");
     if (b != std::string::npos) iface = iface.substr(b);
-    // skip loopback
     if (iface == "lo") continue;
+    // Fields: rx_bytes rx_packets(x6 ignored) tx_bytes
     unsigned long long rx,t1,t2,t3,t4,t5,t6,t7,tx;
     if (sscanf(line.c_str()+colon+1,
                " %llu %llu %llu %llu %llu %llu %llu %llu %llu",
@@ -169,25 +161,23 @@ inline NetRaw readNetRaw() {
   return r;
 }
 
-// ── Load average & process count ─────────────────────────────────────────────
 struct SysInfo { float loadAvg=0; int procCount=0; };
 
 inline SysInfo readSysInfo() {
   SysInfo s;
   std::ifstream f("/proc/loadavg");
   if (f) {
+    // Format: "1.02 0.88 0.77 running/total pid"
     int procs=0;
     char sep;
-    f >> s.loadAvg; // 1-min load
+    f >> s.loadAvg;
     float la5, la15;
     f >> la5 >> la15;
-    // field: "running/total"
     f >> procs >> sep >> s.procCount;
   }
   return s;
 }
 
-// ── Full sample (non-blocking for CPU thanks to AsyncCpuSampler) ─────────────
 inline Sample collectWith(AsyncCpuSampler &cpuSampler,
                           NetRaw &prevNet,
                           const std::string &diskPath = "/") {
@@ -198,8 +188,9 @@ inline Sample collectWith(AsyncCpuSampler &cpuSampler,
   s.ram = ramPercent();
   s.disk = diskPercent(diskPath);
 
-  // Network delta
   NetRaw cur = readNetRaw();
+  if (prevNet.rx == 0 && prevNet.tx == 0)
+    prevNet = cur;
   float deltaRx = (float)(cur.rx >= prevNet.rx ? cur.rx - prevNet.rx : 0);
   float deltaTx = (float)(cur.tx >= prevNet.tx ? cur.tx - prevNet.tx : 0);
   s.netRxKB = deltaRx / 1024.0f;

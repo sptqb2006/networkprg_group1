@@ -1,9 +1,5 @@
-/*
- * viewer_cli.cpp — Monitor Viewer Client
- * v2: Uses CMD query protocol to fetch real data from server.
- *     Supports: /hosts, /history <host> [n], /log [n], /help, /clear
- *     Legacy snapshot push mode removed.
- */
+// viewer_cli — Monitor query client. Connects to server viewer port,
+// sends CMD queries, displays results in ncurses UI.
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sys/socket.h>
@@ -44,17 +40,14 @@ static int connectTo(const std::string &host, uint16_t port) {
   return fd;
 }
 
-// Send a CMD query to server; returns raw JSON response line
 static std::string queryServer(const std::string &serverHost, uint16_t serverPort,
                                const std::string &cmd) {
   int fd = connectTo(serverHost, serverPort);
   if (fd < 0) return "{\"error\":\"cannot connect\"}";
 
-  // Send command line
   std::string req = "CMD " + cmd + "\n";
   (void)send(fd, req.c_str(), req.size(), 0);
 
-  // Receive response (up to 1MB)
   std::string resp;
   char buf[4096];
   struct timeval tv{}; tv.tv_sec = 5;
@@ -63,13 +56,11 @@ static std::string queryServer(const std::string &serverHost, uint16_t serverPor
   while ((n = recv(fd, buf, sizeof(buf), 0)) > 0)
     resp.append(buf, n);
   close(fd);
-  // Strip trailing newline
   while (!resp.empty() && (resp.back()=='\n'||resp.back()=='\r'))
     resp.pop_back();
   return resp;
 }
 
-// Minimal JSON array parser: split top-level objects
 static std::vector<std::string> splitJsonObjects(const std::string &json) {
   std::vector<std::string> out;
   if (json.size() < 2 || json.front() != '[') return out;
@@ -89,7 +80,6 @@ static std::vector<std::string> splitJsonObjects(const std::string &json) {
   return out;
 }
 
-// Extract a JSON string value for a key
 static std::string jstr(const std::string &obj, const std::string &key) {
   std::string pat = "\"" + key + "\":\"";
   auto pos = obj.find(pat);
@@ -100,7 +90,6 @@ static std::string jstr(const std::string &obj, const std::string &key) {
   return obj.substr(pos, end - pos);
 }
 
-// Extract a JSON numeric value for a key (as string)
 static std::string jnum(const std::string &obj, const std::string &key) {
   std::string pat = "\"" + key + "\":";
   auto pos = obj.find(pat);
@@ -117,7 +106,6 @@ static std::string nowStr(time_t t) {
   return b;
 }
 
-// Format timestamp seconds since epoch
 static std::string fmtTs(const std::string &tsStr) {
   try {
     time_t t = (time_t)std::stoll(tsStr);
@@ -125,17 +113,16 @@ static std::string fmtTs(const std::string &tsStr) {
   } catch(...) { return tsStr; }
 }
 
-// ── ncurses color helpers ─────────────────────────────────────────────────────
 static void initViewerColors() {
   start_color();
   use_default_colors();
-  init_pair(1, COLOR_WHITE,   -1); // normal
-  init_pair(2, COLOR_GREEN,   -1); // ok/online
-  init_pair(3, COLOR_RED,     -1); // alert
-  init_pair(4, COLOR_YELLOW,  -1); // warn
-  init_pair(5, COLOR_CYAN,    -1); // header
-  init_pair(6, COLOR_MAGENTA, -1); // stale
-  init_pair(7, COLOR_WHITE,   COLOR_BLUE); // header bar
+  init_pair(1, COLOR_WHITE,   -1);
+  init_pair(2, COLOR_GREEN,   -1);
+  init_pair(3, COLOR_RED,     -1);
+  init_pair(4, COLOR_YELLOW,  -1);
+  init_pair(5, COLOR_CYAN,    -1);
+  init_pair(6, COLOR_MAGENTA, -1);
+  init_pair(7, COLOR_WHITE,   COLOR_BLUE);
   if (COLORS >= 256) {
     init_pair(2,  46,  -1);
     init_pair(3, 196,  -1);
@@ -151,7 +138,7 @@ static int statusColor(const std::string &st) {
   if (st == "WARN")    return 4;
   if (st == "STALE")   return 6;
   if (st == "OK")      return 2;
-  return 1; // OFFLINE or unknown = white/dim
+  return 1;
 }
 
 int main(int argc, char **argv) {
@@ -181,7 +168,6 @@ int main(int argc, char **argv) {
   bool cmdMode = false;
   std::string cmd;
 
-  // Initial welcome screen
   outputLines = {
     "viewer_cli — Monitor Query Client",
     "",
@@ -200,7 +186,6 @@ int main(int argc, char **argv) {
     getmaxyx(stdscr, rows, cols);
     erase();
 
-    // Header bar
     attron(COLOR_PAIR(7) | A_BOLD);
     char hdrBuf[256];
     snprintf(hdrBuf, sizeof(hdrBuf), " ◈ MONITOR VIEWER  server=%s:%d ", host.c_str(), port);
@@ -209,7 +194,6 @@ int main(int argc, char **argv) {
     int tsLen = 8; mvaddstr(0, cols - tsLen - 1, nowStr(time(nullptr)).c_str());
     attroff(COLOR_PAIR(7) | A_BOLD);
 
-    // Output area
     int maxLines = rows - 3;
     int startLine = 0;
     if ((int)outputLines.size() > maxLines)
@@ -219,7 +203,6 @@ int main(int argc, char **argv) {
       mvaddnstr(1 + i, 0, ln.c_str(), cols - 1);
     }
 
-    // Status bar
     attron(COLOR_PAIR(5));
     mvhline(rows - 2, 0, ' ', cols);
     if (!lastCmd.empty()) {
@@ -228,7 +211,6 @@ int main(int argc, char **argv) {
     }
     attroff(COLOR_PAIR(5));
 
-    // Command bar
     attron(A_BOLD);
     mvhline(rows - 1, 0, ' ', cols);
     if (cmdMode) {
@@ -264,7 +246,6 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    // Execute command
     std::string c = trim(cmd);
     cmdMode = false; cmd.clear();
     if (c.empty()) continue;
@@ -286,7 +267,6 @@ int main(int argc, char **argv) {
       continue;
     }
 
-    // Fetch from server
     outputLines.clear();
     outputLines.push_back("Querying server " + host + ":" + std::to_string(port) + " ...");
     refresh();
@@ -306,7 +286,7 @@ int main(int argc, char **argv) {
 
     outputLines.clear();
     if (resp.empty() || resp == "[]") { outputLines = {"(no data)"}; continue; }
-    if (resp.front() == '{') { outputLines = {resp}; continue; } // error obj
+    if (resp.front() == '{') { outputLines = {resp}; continue; }
 
     auto objs = splitJsonObjects(resp);
     if (objs.empty()) { outputLines = {"(empty response)"}; continue; }
@@ -328,7 +308,6 @@ int main(int argc, char **argv) {
                  jnum(obj,"cpu").c_str(), jnum(obj,"ram").c_str(),
                  jnum(obj,"disk").c_str(), jnum(obj,"load").c_str(),
                  ts.c_str());
-        // Prefix with color code indicator (simplistic text marker)
         std::string marker = (co==3?"[!] ":co==4?"[~] ":co==6?"[?] ":"[.] ");
         outputLines.push_back(marker + row);
       }
@@ -340,7 +319,6 @@ int main(int argc, char **argv) {
                "TIME","CPU%","RAM%","DISK%","LOAD","RX KB/s","TX KB/s");
       outputLines.push_back(hdr);
       outputLines.push_back(std::string(cols-1, '-'));
-      // Most recent last
       for (int i = (int)objs.size()-1; i >= 0; i--) {
         auto &obj = objs[i];
         char row[256];

@@ -1,9 +1,5 @@
 #pragma once
-/*
- * server_stats.hpp — Internal server metrics (thread-safe, atomic).
- * Tracks: agents connected, total messages received, dropped, alerts sent,
- * server uptime. Exposed via HTTP API and CMD protocol.
- */
+// Internal server metrics (thread-safe). Exposed via HTTP API and Prometheus endpoint.
 #include <atomic>
 #include <ctime>
 #include <string>
@@ -14,7 +10,7 @@ struct ServerStats {
     std::atomic<int>      agentsOnline{0};
     std::atomic<int>      agentsStale{0};
     std::atomic<uint64_t> msgsTotal{0};
-    std::atomic<uint64_t> msgsDropped{0};   // parse errors / auth failures
+    std::atomic<uint64_t> msgsDropped{0};
     std::atomic<uint64_t> alertsSent{0};
     std::atomic<uint64_t> viewerConnects{0};
     time_t                startTime{0};
@@ -46,7 +42,6 @@ struct ServerStats {
         return buf;
     }
 
-    // Prometheus text format
     std::string toPrometheus() const {
         long long uptime = (long long)(time(nullptr) - startTime);
         std::string o;

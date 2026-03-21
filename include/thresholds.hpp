@@ -1,13 +1,5 @@
 #pragma once
-/*
- * Threshold config loader.
- * Supports:
- *   CPU=80
- *   RAM=90
- *   DISK=85
- *   web-1.cpu=85
- *   db-server.ram=95
- */
+// Threshold config loader. Supports global (CPU=80) and per-host (web-1.cpu=85) overrides.
 #include <string>
 #include <unordered_map>
 #include <fstream>
@@ -21,7 +13,6 @@ struct Thresholds {
     float cpu  = 80.0f;
     float ram  = 90.0f;
     float disk = 85.0f;
-    // per-host overrides: key = "host.metric" (lower-case)
     std::unordered_map<std::string, float> perHost;
 
     float getCPU(const std::string& host) const {
@@ -50,13 +41,11 @@ inline Thresholds loadThresholds(const std::string& path) {
     if (!f) return t;
     std::string line;
     while (std::getline(f, line)) {
-        // strip comments
         auto hash = line.find('#');
         if (hash != std::string::npos) line = line.substr(0, hash);
         auto eq = line.find('=');
         if (eq == std::string::npos) continue;
         std::string key = toLower(line.substr(0, eq));
-        // trim
         key.erase(remove_if(key.begin(), key.end(), ::isspace), key.end());
         std::string val = line.substr(eq + 1);
         val.erase(remove_if(val.begin(), val.end(), ::isspace), val.end());
