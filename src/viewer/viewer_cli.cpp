@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
     attron(COLOR_PAIR(7) | A_BOLD);
     char hdrBuf[256];
     snprintf(hdrBuf, sizeof(hdrBuf),
-             " ◈ MONITOR VIEWER  server=%s:%d  Develop by group1_H@ckErUSTH ",
+             " ◈ MONITOR VIEWER  server=%s:%d  Developed by group1_H@ckErUSTH ",
              host.c_str(), port);
     for (int i = 0; i < cols; i++) mvaddch(0, i, ' ');
     mvaddstr(0, 1, hdrBuf);

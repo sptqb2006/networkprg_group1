@@ -298,10 +298,11 @@ private:
   void renderOverview(const std::vector<LogEvent> &log, const Thresholds &thresh) {
     calcOverviewLayout();
     drawOuterFrame();
-    renderHeader(("[ U ] " + std::string(THEME_NAMES[uiMode_]) + "  [Tab] Detail  [/] Cmd  [Q] Quit").c_str());
+    renderHeader();
     renderGraphs(thresh);
     renderTable(thresh);
     renderLog(log, thresh);
+    renderFooter();
   }
 
   void calcOverviewLayout() {
@@ -340,26 +341,41 @@ private:
     mvaddstr(y,0,BOX_LT); for(int i=1;i<cols_-1;i++) addstr(BOX_H); addstr(BOX_RT);
   }
 
-  void renderHeader(const char *hint) {
+  void renderHeader() {
     int y=1;
     attron(COLOR_PAIR(C_HEADER)|A_BOLD);
     for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
     std::string ts=fmtTime(time(nullptr));
     mvaddstr(y,2,ts.c_str());
-    std::string title=" ◈  DISTRIBUTED SYSTEM MONITOR  ◈  Develop by group1_H@ckErUSTH ";
+    std::string title=" ◈  DISTRIBUTED SYSTEM MONITOR  ◈ ";
     int tx=(cols_-(int)title.size())/2;
     if (tx>10) mvaddstr(y,tx,title.c_str());
-    int hintLen=(int)strlen(hint);
-    if(cols_-hintLen-3>0) mvaddstr(y,cols_-hintLen-2,hint);
     attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
+  }
+
+  void renderFooter() {
+    int y=rows_-1;
+    // Hotkey hints — bottom left
+    std::string hint="[ U ] " + std::string(THEME_NAMES[uiMode_]) + "  [Tab] Detail  [/] Cmd  [Q] Quit";
+    attron(COLOR_PAIR(C_CYAN)|A_BOLD);
+    mvaddstr(y,2,hint.c_str());
+    attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
+    // Credit — bottom right, centered with hints
+    const char *credit="Developed by group1_H@ckErUSTH";
+    int crx=cols_-(int)strlen(credit)-3;
+    if(crx>(int)hint.size()+4) {
+      attron(COLOR_PAIR(C_CYAN)|A_BOLD);
+      mvaddstr(y,crx,credit);
+      attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
+    }
   }
 
   void renderGraphs(const Thresholds &) {
     int innerW=cols_-2, halfW=innerW/2;
     int startY=graphY_+1;
+
     int online=0,offline=0,warn=0,alert=0,stale=0;
     float sumCpu=0,sumRam=0,sumLoad=0; int sumProc=0,active=0;
-
     for (const auto &h : sortedHosts_) {
       if (h.status==HostStatus::OFFLINE) { offline++; continue; }
       if (h.status==HostStatus::STALE)   { stale++; continue; }
@@ -373,20 +389,25 @@ private:
     float avgRam=active?sumRam/active:0;
     float avgLoad=active?sumLoad/active:0;
 
+    // Draw panel with title centered within its width
     auto drawPanelTitle=[&](int x0, int pw, const char *title, int titleColor) {
       if (x0>1) {
         attron(COLOR_PAIR(C_BOX)|A_BOLD);
         for(int r=startY;r<startY+graphH_;r++) mvaddstr(r,x0,BOX_V);
         attroff(COLOR_PAIR(C_BOX)|A_BOLD);
       }
-      attron(COLOR_PAIR(C_BOX)|A_BOLD); mvaddstr(startY,x0+(x0>1?1:0),LINE_H); addstr(" "); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
+      int titleLen=(int)strlen(title);
+      int pad=(pw-titleLen-2)/2; if(pad<1) pad=1;
+      int bx=x0+(x0>1?1:0);
+      attron(COLOR_PAIR(C_BOX)|A_BOLD); mvaddstr(startY,bx,""); move(startY,bx);
+      for(int i=0;i<pad;i++) addstr(LINE_H);
+      addstr(" "); attroff(COLOR_PAIR(C_BOX)|A_BOLD);
       attron(COLOR_PAIR(titleColor)|A_BOLD); addstr(title); attroff(COLOR_PAIR(titleColor)|A_BOLD);
       attron(COLOR_PAIR(C_BOX)|A_BOLD); addstr(" ");
       int cur=getcurx(stdscr); for(int i=cur;i<x0+pw;i++) addstr(LINE_H);
       attroff(COLOR_PAIR(C_BOX)|A_BOLD);
     };
 
-    // Left panel: fleet status counters
     drawPanelTitle(1, halfW, "STATUS", C_CYAN);
     attron(COLOR_PAIR(C_GREEN)|A_BOLD);  mvprintw(startY+1,3,"● %d online",online);   attroff(COLOR_PAIR(C_GREEN)|A_BOLD);
     attron(COLOR_PAIR(C_RED)|A_BOLD);    printw("   ● %d alert",alert);                attroff(COLOR_PAIR(C_RED)|A_BOLD);
@@ -394,13 +415,12 @@ private:
     attron(COLOR_PAIR(C_STALE));         mvprintw(startY+2,3,"◌ %d stale",stale);      attroff(COLOR_PAIR(C_STALE));
     attron(COLOR_PAIR(C_GRAY)|A_DIM);    printw("   ○ %d offline",offline);             attroff(COLOR_PAIR(C_GRAY)|A_DIM);
 
-    // Right panel: fleet averages
     int x2=1+halfW;
     drawPanelTitle(x2, innerW-halfW, "AVERAGE", C_CYAN);
     int cCpu=avgCpu>=80?C_RED:avgCpu>=60?C_WARN_ORANGE:C_OK_DIM;
     int cRam=avgRam>=85?C_RED:avgRam>=65?C_WARN_ORANGE:C_OK_DIM;
     attron(COLOR_PAIR(cCpu)|A_BOLD); mvprintw(startY+1,x2+2,"CPU: %5.1f%%",avgCpu); attroff(COLOR_PAIR(cCpu)|A_BOLD);
-    attron(COLOR_PAIR(cRam)|A_BOLD); printw("   RAM: %5.1f%%",avgRam); attroff(COLOR_PAIR(cRam)|A_BOLD);
+    attron(COLOR_PAIR(cRam)|A_BOLD); printw("   RAM: %5.1f%%",avgRam);               attroff(COLOR_PAIR(cRam)|A_BOLD);
     attron(COLOR_PAIR(C_CYAN));      mvprintw(startY+2,x2+2,"LOAD: %5.2f   PROCS: %d",avgLoad,sumProc); attroff(COLOR_PAIR(C_CYAN));
   }
 
@@ -558,17 +578,17 @@ private:
       const auto &ev=*filtered[idx]; int ry=contentY+i; if(ry>=rows_-1) break;
       int cx=2, ec; const char *es, *badge;
       switch(ev.type) {
-      case LogEventType::CONNECT:    ec=C_OK_DIM;      es="CONN  "; badge="▶"; break;
-      case LogEventType::ALERT:      ec=C_RED;         es="ALERT "; badge="●"; break;
-      case LogEventType::DISCONNECT: ec=C_WARN_ORANGE; es="DISC  "; badge="◀"; break;
-      case LogEventType::STALE:      ec=C_STALE;       es="STALE "; badge="◌"; break;
-      default:                       ec=C_NORMAL;      es="INFO  "; badge="·"; break;
+      case LogEventType::CONNECT:    ec=C_OK_DIM;      es="Connected    "; badge="▶"; break;
+      case LogEventType::ALERT:      ec=C_RED;         es="ALERT        "; badge="●"; break;
+      case LogEventType::DISCONNECT: ec=C_WARN_ORANGE; es="Disconnected "; badge="◀"; break;
+      case LogEventType::STALE:      ec=C_STALE;       es="STALE        "; badge="◌"; break;
+      default:                       ec=C_NORMAL;      es="INFO         "; badge="·"; break;
       }
       attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,badge); cx+=2; attroff(COLOR_PAIR(ec)|A_BOLD);
       attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(ry,cx,fmtTime(ev.ts).c_str()); cx+=10; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
       attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(ry,cx,"%-14s",trunc(ev.host,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
       attron(COLOR_PAIR(C_GRAY)|A_DIM); mvprintw(ry,cx,"%-14s",trunc(ev.ip,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,es); cx+=7; attroff(COLOR_PAIR(ec)|A_BOLD);
+      attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,es); cx+=14; attroff(COLOR_PAIR(ec)|A_BOLD);
 
       if(ev.type==LogEventType::ALERT&&cx+24<cols_-1) {
         auto pm=[&](float val,char m,const char *lbl){
@@ -590,8 +610,6 @@ private:
         attroff(COLOR_PAIR(C_GRAY)|A_DIM);
       }
     }
-    char si[32]; snprintf(si,sizeof(si)," %d/%d ",total,(int)log.size());
-    attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(rows_-1,cols_-(int)strlen(si)-2,si); attroff(COLOR_PAIR(C_GRAY)|A_DIM);
     if(total>innerH)
       drawScrollbar(cols_-2,contentY,contentY+innerH-1,logScroll_,innerH,total);
   }
