@@ -43,6 +43,7 @@
 # Local build/runtime artifacts
 build/
 .cache/
+.claude/
 .logs/
 .pids/
 data/
