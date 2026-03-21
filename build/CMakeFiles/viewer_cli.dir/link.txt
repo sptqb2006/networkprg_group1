@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/viewer_cli.dir/src/viewer/viewer_cli.cpp.o -o "/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/viewer_cli"  -lcurses /usr/lib/x86_64-linux-gnu/libform.so -lpthread 
