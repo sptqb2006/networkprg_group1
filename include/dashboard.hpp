@@ -305,7 +305,7 @@ private:
   }
 
   void calcOverviewLayout() {
-    hdrY_=0; graphY_=2; graphH_=4;
+    hdrY_=0; graphY_=2; graphH_=3;
     int graphEnd=graphY_+1+graphH_;
     tableY_=graphEnd;
     int hostCount=std::max(1,(int)sortedHosts_.size());
@@ -346,7 +346,7 @@ private:
     for(int i=1;i<cols_-1;i++) mvaddch(y,i,' ');
     std::string ts=fmtTime(time(nullptr));
     mvaddstr(y,2,ts.c_str());
-    std::string title=" ◈  DISTRIBUTED SYSTEM MONITOR  ◈ ";
+    std::string title=" ◈  DISTRIBUTED SYSTEM MONITOR  ◈  Develop by group1_H@ckErUSTH ";
     int tx=(cols_-(int)title.size())/2;
     if (tx>10) mvaddstr(y,tx,title.c_str());
     int hintLen=(int)strlen(hint);
@@ -354,33 +354,26 @@ private:
     attroff(COLOR_PAIR(C_HEADER)|A_BOLD);
   }
 
-  void renderGraphs(const Thresholds &th) {
-    (void)th;
-    int innerW=cols_-2, panelW=innerW/3, panelWLast=innerW-panelW*2;
+  void renderGraphs(const Thresholds &) {
+    int innerW=cols_-2, halfW=innerW/2;
     int startY=graphY_+1;
     int online=0,offline=0,warn=0,alert=0,stale=0;
-    float sumCpu=0,sumRam=0,maxCpu=-1,maxRam=-1,maxDisk=-1;
-    std::string hotCpu="-",hotRam="-",hotDisk="-";
-    float sumLoad=0; int sumProc=0, netOnline=0;
+    float sumCpu=0,sumRam=0,sumLoad=0; int sumProc=0,active=0;
 
     for (const auto &h : sortedHosts_) {
       if (h.status==HostStatus::OFFLINE) { offline++; continue; }
       if (h.status==HostStatus::STALE)   { stale++; continue; }
-      online++; netOnline++;
+      active++; online++;
       sumCpu+=h.cpu; sumRam+=h.ram;
       sumLoad+=h.loadAvg; sumProc+=h.procCount;
       if (h.status==HostStatus::WARNING) warn++;
       if (h.status==HostStatus::ALERT)   alert++;
-      if (h.cpu>maxCpu)  { maxCpu=h.cpu;   hotCpu=h.name; }
-      if (h.ram>maxRam)  { maxRam=h.ram;   hotRam=h.name; }
-      if (h.disk>maxDisk){ maxDisk=h.disk; hotDisk=h.name;}
     }
-    float avgCpu=netOnline?sumCpu/netOnline:0;
-    float avgRam=netOnline?sumRam/netOnline:0;
-    float avgLoad=netOnline?sumLoad/netOnline:0;
-    int threat=std::min(100, alert*30+warn*10+(int)(avgCpu*0.2f));
+    float avgCpu=active?sumCpu/active:0;
+    float avgRam=active?sumRam/active:0;
+    float avgLoad=active?sumLoad/active:0;
 
-    auto drawPanel=[&](int x0, int pw, const char *title, int titleColor) {
+    auto drawPanelTitle=[&](int x0, int pw, const char *title, int titleColor) {
       if (x0>1) {
         attron(COLOR_PAIR(C_BOX)|A_BOLD);
         for(int r=startY;r<startY+graphH_;r++) mvaddstr(r,x0,BOX_V);
@@ -393,50 +386,22 @@ private:
       attroff(COLOR_PAIR(C_BOX)|A_BOLD);
     };
 
-    drawPanel(1, panelW, "TACTICAL RISK", C_RED);
-    {
-      int cRisk=threat>=70?C_RED:threat>=35?C_YELLOW:C_OK_DIM;
-      int barW=std::min(panelW-14, 16); if(barW<4) barW=4;
-      int filled=std::clamp((int)(threat*barW/100), 0, barW);
-      attron(COLOR_PAIR(cRisk)|A_BOLD);
-      mvprintw(startY+1,3,"RISK %3d%% ",threat);
-      for(int b=0;b<filled;b++) addstr(BLOCK_FULL);
-      attroff(COLOR_PAIR(cRisk)|A_BOLD);
-      attron(COLOR_PAIR(C_GRAY)|A_DIM);
-      for(int b=filled;b<barW;b++) addstr(BLOCK_EMPTY);
-      attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-      attron(COLOR_PAIR(C_CYAN));
-      mvprintw(startY+2,3,"● %-2d alert  ◐ %-2d warn",alert,warn);
-      mvprintw(startY+3,3,"▶ %-2d on  ▪ %-2d stale  ○ %-2d off",online,stale,offline);
-      attroff(COLOR_PAIR(C_CYAN));
-    }
+    // Left panel: fleet status counters
+    drawPanelTitle(1, halfW, "STATUS", C_CYAN);
+    attron(COLOR_PAIR(C_GREEN)|A_BOLD);  mvprintw(startY+1,3,"● %d online",online);   attroff(COLOR_PAIR(C_GREEN)|A_BOLD);
+    attron(COLOR_PAIR(C_RED)|A_BOLD);    printw("   ● %d alert",alert);                attroff(COLOR_PAIR(C_RED)|A_BOLD);
+    attron(COLOR_PAIR(C_YELLOW)|A_BOLD); printw("   ◐ %d warn",warn);                  attroff(COLOR_PAIR(C_YELLOW)|A_BOLD);
+    attron(COLOR_PAIR(C_STALE));         mvprintw(startY+2,3,"◌ %d stale",stale);      attroff(COLOR_PAIR(C_STALE));
+    attron(COLOR_PAIR(C_GRAY)|A_DIM);    printw("   ○ %d offline",offline);             attroff(COLOR_PAIR(C_GRAY)|A_DIM);
 
-    int x2=1+panelW;
-    drawPanel(x2, panelW, "HOT TARGETS", C_MAGENTA);
-    {
-      int co1=maxCpu>=0?C_RED:C_GRAY, co2=maxRam>=0?C_WARN_ORANGE:C_GRAY, co3=maxDisk>=0?C_CYAN:C_GRAY;
-      attron(COLOR_PAIR(co1)|A_BOLD);
-      mvprintw(startY+1,x2+2,"⬆ CPU  %-10s %5.1f%%",trunc(hotCpu,10).c_str(),std::max(0.f,maxCpu));
-      attroff(COLOR_PAIR(co1)|A_BOLD);
-      attron(COLOR_PAIR(co2)|A_BOLD);
-      mvprintw(startY+2,x2+2,"⬆ RAM  %-10s %5.1f%%",trunc(hotRam,10).c_str(),std::max(0.f,maxRam));
-      attroff(COLOR_PAIR(co2)|A_BOLD);
-      attron(COLOR_PAIR(co3)|A_BOLD);
-      mvprintw(startY+3,x2+2,"⬆ DISK %-10s %5.1f%%",trunc(hotDisk,10).c_str(),std::max(0.f,maxDisk));
-      attroff(COLOR_PAIR(co3)|A_BOLD);
-    }
-
-    int x3=1+panelW*2;
-    drawPanel(x3, panelWLast, "FLEET HEALTH", C_CYAN);
-    {
-      int cCpu=avgCpu>=80?C_RED:avgCpu>=60?C_WARN_ORANGE:C_OK_DIM;
-      int cRam=avgRam>=85?C_RED:avgRam>=65?C_WARN_ORANGE:C_OK_DIM;
-      attron(COLOR_PAIR(cCpu)|A_BOLD); mvprintw(startY+1,x3+2,"CPU avg : %5.1f%%",avgCpu); attroff(COLOR_PAIR(cCpu)|A_BOLD);
-      attron(COLOR_PAIR(cRam)|A_BOLD); mvprintw(startY+2,x3+2,"RAM avg : %5.1f%%",avgRam); attroff(COLOR_PAIR(cRam)|A_BOLD);
-      attron(COLOR_PAIR(C_FLEET)|A_BOLD);
-      mvprintw(startY+3,x3+2,"LOAD/1m : %5.2f  PROCS:%-5d",avgLoad,sumProc);
-      attroff(COLOR_PAIR(C_FLEET)|A_BOLD);
-    }
+    // Right panel: fleet averages
+    int x2=1+halfW;
+    drawPanelTitle(x2, innerW-halfW, "AVERAGE", C_CYAN);
+    int cCpu=avgCpu>=80?C_RED:avgCpu>=60?C_WARN_ORANGE:C_OK_DIM;
+    int cRam=avgRam>=85?C_RED:avgRam>=65?C_WARN_ORANGE:C_OK_DIM;
+    attron(COLOR_PAIR(cCpu)|A_BOLD); mvprintw(startY+1,x2+2,"CPU: %5.1f%%",avgCpu); attroff(COLOR_PAIR(cCpu)|A_BOLD);
+    attron(COLOR_PAIR(cRam)|A_BOLD); printw("   RAM: %5.1f%%",avgRam); attroff(COLOR_PAIR(cRam)|A_BOLD);
+    attron(COLOR_PAIR(C_CYAN));      mvprintw(startY+2,x2+2,"LOAD: %5.2f   PROCS: %d",avgLoad,sumProc); attroff(COLOR_PAIR(C_CYAN));
   }
 
   void drawSparkline(int y, int x, int w, int rows,
@@ -490,6 +455,16 @@ private:
     mvprintw(hy,x+cBar+cPct+2,"LOAD");
     mvprintw(hy,innerW-cStatus,"STATUS");
     attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
+
+    if(sortedHosts_.empty()) {
+      int wy=tableY_+3;
+      if(wy<logY_) {
+        attron(COLOR_PAIR(C_GRAY)|A_DIM);
+        mvaddstr(wy,4,"Waiting for devices...");
+        attroff(COLOR_PAIR(C_GRAY)|A_DIM);
+      }
+      return;
+    }
 
     int dataY=tableY_+3, maxRows=logY_-dataY;
     if(maxRows<0) maxRows=0;
@@ -560,32 +535,42 @@ private:
   }
 
   void renderLog(const std::vector<LogEvent> &log, const Thresholds &th) {
-    std::string logTitle=" EVENT LOG  [↑↓ / PgUp PgDn to scroll] ";
+    // Filter: only show significant events (skip METRIC noise)
+    std::vector<const LogEvent *> filtered;
+    filtered.reserve(log.size());
+    for (const auto &ev : log)
+      if (ev.type != LogEventType::METRIC)
+        filtered.push_back(&ev);
+
+    std::string logTitle=" EVENT LOG  [use ↑↓ to scroll] ";
     int ltx=(cols_-(int)logTitle.size())/2; if(ltx<3) ltx=3;
     attron(COLOR_PAIR(C_MAGENTA)|A_BOLD); mvaddstr(logY_,ltx,logTitle.c_str()); attroff(COLOR_PAIR(C_MAGENTA)|A_BOLD);
+
     int contentY=logY_+1, innerH=logH_; if(innerH<=0) return;
-    int maxScroll=std::max(0,(int)log.size()-innerH);
+    int total=(int)filtered.size();
+    int maxScroll=std::max(0,total-innerH);
     logScroll_=std::clamp(logScroll_,0,maxScroll);
-    int startIdx=(int)log.size()-innerH-logScroll_;
+    int startIdx=total-innerH-logScroll_;
     if(startIdx<0) startIdx=0;
+
     for(int i=0;i<innerH;i++) {
-      int idx=startIdx+i; if(idx<0||idx>=(int)log.size()) continue;
-      const auto &ev=log[idx]; int ry=contentY+i; if(ry>=rows_-1) break;
+      int idx=startIdx+i; if(idx<0||idx>=total) continue;
+      const auto &ev=*filtered[idx]; int ry=contentY+i; if(ry>=rows_-1) break;
       int cx=2, ec; const char *es, *badge;
       switch(ev.type) {
-      case LogEventType::CONNECT:    ec=C_OK_DIM;      es="CONN   "; badge="▶"; break;
-      case LogEventType::METRIC:     ec=C_GRAY;        es="METRIC "; badge="·"; break;
-      case LogEventType::ALERT:      ec=C_RED;         es="ALERT  "; badge="●"; break;
-      case LogEventType::DISCONNECT: ec=C_WARN_ORANGE; es="DISC   "; badge="◀"; break;
-      case LogEventType::STALE:      ec=C_STALE;       es="STALE  "; badge="◌"; break;
-      default:                       ec=C_NORMAL;      es="INFO   "; badge="·"; break;
+      case LogEventType::CONNECT:    ec=C_OK_DIM;      es="CONN  "; badge="▶"; break;
+      case LogEventType::ALERT:      ec=C_RED;         es="ALERT "; badge="●"; break;
+      case LogEventType::DISCONNECT: ec=C_WARN_ORANGE; es="DISC  "; badge="◀"; break;
+      case LogEventType::STALE:      ec=C_STALE;       es="STALE "; badge="◌"; break;
+      default:                       ec=C_NORMAL;      es="INFO  "; badge="·"; break;
       }
       attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,badge); cx+=2; attroff(COLOR_PAIR(ec)|A_BOLD);
       attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(ry,cx,fmtTime(ev.ts).c_str()); cx+=10; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
       attron(COLOR_PAIR(C_WHITE_BD)|A_BOLD); mvprintw(ry,cx,"%-14s",trunc(ev.host,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_WHITE_BD)|A_BOLD);
       attron(COLOR_PAIR(C_GRAY)|A_DIM); mvprintw(ry,cx,"%-14s",trunc(ev.ip,14).c_str()); cx+=15; attroff(COLOR_PAIR(C_GRAY)|A_DIM);
       attron(COLOR_PAIR(ec)|A_BOLD); mvaddstr(ry,cx,es); cx+=7; attroff(COLOR_PAIR(ec)|A_BOLD);
-      if((ev.type==LogEventType::METRIC||ev.type==LogEventType::ALERT)&&cx+24<cols_-1) {
+
+      if(ev.type==LogEventType::ALERT&&cx+24<cols_-1) {
         auto pm=[&](float val,char m,const char *lbl){
           int co=pctColor(val,ev.host,th,m);
           attron(COLOR_PAIR(co));
@@ -605,10 +590,10 @@ private:
         attroff(COLOR_PAIR(C_GRAY)|A_DIM);
       }
     }
-    char si[32]; snprintf(si,sizeof(si)," %d/%d ",(int)log.size(),MAX_LOG_ENTRIES);
+    char si[32]; snprintf(si,sizeof(si)," %d/%d ",total,(int)log.size());
     attron(COLOR_PAIR(C_GRAY)|A_DIM); mvaddstr(rows_-1,cols_-(int)strlen(si)-2,si); attroff(COLOR_PAIR(C_GRAY)|A_DIM);
-    if((int)log.size()>innerH)
-      drawScrollbar(cols_-2,contentY,contentY+innerH-1,logScroll_,innerH,(int)log.size());
+    if(total>innerH)
+      drawScrollbar(cols_-2,contentY,contentY+innerH-1,logScroll_,innerH,total);
   }
 
   void renderDetailView(const Thresholds &th) {
