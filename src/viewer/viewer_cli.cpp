@@ -183,12 +183,14 @@ int main(int argc, char **argv) {
 
   while (true) {
     int rows, cols;
-    getmaxyx(stdscr, rows, cols);
+    getmaxyx(stdscr, rows, cols); 
     erase();
 
     attron(COLOR_PAIR(7) | A_BOLD);
     char hdrBuf[256];
-    snprintf(hdrBuf, sizeof(hdrBuf), " ◈ MONITOR VIEWER  server=%s:%d ", host.c_str(), port);
+    snprintf(hdrBuf, sizeof(hdrBuf),
+             " ◈ MONITOR VIEWER  server=%s:%d  Develop by group1_H@ackerUSTH ",
+             host.c_str(), port);
     for (int i = 0; i < cols; i++) mvaddch(0, i, ' ');
     mvaddstr(0, 1, hdrBuf);
     int tsLen = 8; mvaddstr(0, cols - tsLen - 1, nowStr(time(nullptr)).c_str());
