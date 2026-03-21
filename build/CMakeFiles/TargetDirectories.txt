@@ -1,5 +1,0 @@
-/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/build/CMakeFiles/monitor_server.dir
-/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/build/CMakeFiles/agent.dir
-/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/build/CMakeFiles/viewer_cli.dir
-/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/build/CMakeFiles/edit_cache.dir
-/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1/build/CMakeFiles/rebuild_cache.dir
