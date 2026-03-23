@@ -1,0 +1,7 @@
+.logs/
+.pids/
+data/
+agent
+monitor_server
+viewer_cli
+build/
