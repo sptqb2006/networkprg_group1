@@ -1,6 +1,6 @@
 <div align="center">
   <h1>🚀 Distributed System Monitor</h1>
-  <p><b>A high-performance, real-time distributed telemetry and alerting system built in modern C++20.</b></p>
+  <p><b>A high-performance, real-time distributed telemetry and alerting system built in C++.</b></p>
   <p>
     <i>Designed for scale, built for speed, tailored for absolute observability.</i>
   </p>
