@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <iostream>
 #include <mutex>
@@ -116,14 +117,15 @@ static std::string fmtTs(const std::string &tsStr) {
 static void initViewerColors() {
   start_color();
   use_default_colors();
-  init_pair(1, COLOR_WHITE,   -1);
-  init_pair(2, COLOR_GREEN,   -1);
-  init_pair(3, COLOR_RED,     -1);
-  init_pair(4, COLOR_YELLOW,  -1);
-  init_pair(5, COLOR_CYAN,    -1);
-  init_pair(6, COLOR_MAGENTA, -1);
-  init_pair(7, COLOR_WHITE,   COLOR_BLUE);
-  init_pair(8, COLOR_WHITE,   COLOR_BLACK); // dashboard border
+  init_pair(1, COLOR_WHITE,   -1);      // default text
+  init_pair(2, COLOR_GREEN,   -1);      // OK status
+  init_pair(3, COLOR_RED,     -1);      // ALERT / alert text
+  init_pair(4, COLOR_YELLOW,  -1);      // WARN
+  init_pair(5, COLOR_CYAN,    -1);      // info / cmd
+  init_pair(6, COLOR_MAGENTA, -1);      // STALE
+  init_pair(7, COLOR_WHITE,   COLOR_BLUE);  // header bar
+  init_pair(8, COLOR_RED,     COLOR_BLACK); // alert panel header
+  init_pair(9, COLOR_CYAN,    COLOR_BLACK); // separator
   if (COLORS >= 256) {
     init_pair(2,  46,  -1);
     init_pair(3, 196,  -1);
@@ -131,7 +133,8 @@ static void initViewerColors() {
     init_pair(5, 153,  -1);
     init_pair(6, 141,  -1);
     init_pair(7,  15,  17);
-    init_pair(8, 153,  236);
+    init_pair(8, 196, 234);
+    init_pair(9, 153, 234);
   }
 }
 
@@ -143,49 +146,48 @@ static int statusColor(const std::string &st) {
   return 1;
 }
 
-// ── Broadcast receiver ──────────────────────────────────────────────────────
-// Strips ANSI escape sequences and splits into lines for ncurses rendering.
-static std::string stripAnsi(const std::string &s) {
-  std::string out;
-  out.reserve(s.size());
-  bool inEsc = false;
-  for (size_t i = 0; i < s.size(); i++) {
-    if (s[i] == '\033') { inEsc = true; continue; }
-    if (inEsc) {
-      // ESC [ ... <letter> ends the sequence
-      if ((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z'))
-        inEsc = false;
-      continue;
-    }
-    out += s[i];
-  }
-  return out;
-}
+// ── Broadcast receiver globals ──────────────────────────────────────────────
+static std::mutex g_alertMtx;
+static std::vector<std::string> g_alertLines;  // formatted alert strings
+static const int MAX_ALERT_LINES = 200;
 
-static std::vector<std::string> splitLines(const std::string &s) {
-  std::vector<std::string> lines;
-  std::istringstream iss(s);
-  std::string line;
-  while (std::getline(iss, line)) {
-    // remove trailing CR
-    while (!line.empty() && line.back() == '\r') line.pop_back();
-    lines.push_back(line);
-  }
-  return lines;
-}
-
-// Global broadcast state
-static std::mutex g_bcastMtx;
-static std::vector<std::string> g_bcastLines;
 static std::atomic<bool> g_bcastConnected{false};
 static std::atomic<bool> g_running{true};
+static std::atomic<int>  g_alertCount{0};
+
+// Parse an ALERT_EVT line and return a formatted display string
+static std::string formatAlertEvt(const std::string &json) {
+  std::string host = jstr(json, "host");
+  std::string ts = fmtTs(jnum(json, "timestamp"));
+
+  std::string detail;
+  // Check each metric
+  std::string cpuVal = jnum(json, "cpu");
+  std::string cpuTh  = jnum(json, "cpu_threshold");
+  if (cpuVal != "-" && cpuTh != "-")
+    detail += "CPU=" + cpuVal + "%(>" + cpuTh + "%) ";
+
+  std::string ramVal = jnum(json, "ram");
+  std::string ramTh  = jnum(json, "ram_threshold");
+  if (ramVal != "-" && ramTh != "-")
+    detail += "RAM=" + ramVal + "%(>" + ramTh + "%) ";
+
+  std::string diskVal = jnum(json, "disk");
+  std::string diskTh  = jnum(json, "disk_threshold");
+  if (diskVal != "-" && diskTh != "-")
+    detail += "DISK=" + diskVal + "%(>" + diskTh + "%) ";
+
+  char buf[256];
+  snprintf(buf, sizeof(buf), " %s  %-14s  %s",
+           ts.c_str(), host.substr(0, 14).c_str(), detail.c_str());
+  return buf;
+}
 
 static void broadcastReceiver(const std::string &host, uint16_t port) {
   while (g_running) {
     int fd = connectTo(host, port);
     if (fd < 0) {
       g_bcastConnected = false;
-      // Retry after 2s
       for (int i = 0; i < 20 && g_running; i++)
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
@@ -201,27 +203,31 @@ static void broadcastReceiver(const std::string &host, uint16_t port) {
       int n = recv(fd, buf, sizeof(buf), 0);
       if (n <= 0) {
         if (n == 0) break; // server closed
-        // timeout — just retry recv
-        continue;
+        continue;          // timeout — retry
       }
       buffer.append(buf, n);
 
-      // If buffer contains screen clear sequence, take the latest full frame
-      // The frame is delimited by CLR = \033[2J\033[H
-      std::string clr = "\033[2J\033[H";
-      auto lastClr = buffer.rfind(clr);
-      if (lastClr != std::string::npos) {
-        std::string frame = buffer.substr(lastClr + clr.size());
-        // Strip ANSI for ncurses rendering
-        std::string clean = stripAnsi(frame);
-        auto lines = splitLines(clean);
-        {
-          std::lock_guard<std::mutex> lk(g_bcastMtx);
-          g_bcastLines = std::move(lines);
+      // Process complete lines
+      size_t pos;
+      while ((pos = buffer.find('\n')) != std::string::npos) {
+        std::string line = buffer.substr(0, pos);
+        buffer.erase(0, pos + 1);
+
+        // Check if this is an ALERT_EVT
+        if (line.rfind("ALERT_EVT ", 0) == 0) {
+          std::string json = line.substr(10); // skip "ALERT_EVT "
+          std::string formatted = formatAlertEvt(json);
+          {
+            std::lock_guard<std::mutex> lk(g_alertMtx);
+            g_alertLines.push_back(formatted);
+            if ((int)g_alertLines.size() > MAX_ALERT_LINES)
+              g_alertLines.erase(g_alertLines.begin());
+          }
+          g_alertCount++;
         }
-        buffer.clear();
+        // Dashboard frames (starting with \033[2J) are silently consumed
       }
-      // Prevent buffer from growing unbounded
+      // Clear stale data (dashboard frames without newlines)
       if (buffer.size() > 65536) buffer.clear();
     }
     close(fd);
@@ -262,7 +268,10 @@ int main(int argc, char **argv) {
 
   // Command history
   std::vector<std::string> cmdHistory;
-  int histIdx = -1; // -1 means not browsing history
+  int histIdx = -1;
+
+  // Alert scroll offset (0 = show latest)
+  int alertScroll = 0;
 
   outputLines = {
     "viewer_cli — Monitor Query Client",
@@ -272,12 +281,10 @@ int main(int argc, char **argv) {
     "  /history <host> [n] - Metric history for last n mins (default 30)",
     "  /log [n]            - Event log for last n mins (default 50)",
     "  /help               - Show this help",
-    "  /clear              - Clear output",
+    "  /clear              - Clear output / clear alerts",
     "",
     "Press '/' to enter a command, Esc to cancel, q to quit.",
     "Up/Down arrows recall command history.",
-    "",
-    "Live dashboard from server broadcast shown at bottom.",
   };
 
   while (true) {
@@ -285,63 +292,86 @@ int main(int argc, char **argv) {
     getmaxyx(stdscr, rows, cols);
     erase();
 
+    // ── Layout calculation ──────────────────────────────────────────────────
+    // Row 0:         Header bar
+    // Row 1..sepRow-1: Command output panel
+    // Row sepRow:    Separator line (Alert panel title)
+    // Row sepRow+1..rows-3: Alert panel
+    // Row rows-2:   Status bar
+    // Row rows-1:   Command input line
+
+    // Alert panel gets roughly 1/3 of usable space, minimum 4 rows
+    int usableRows = rows - 4; // header + sep + status + cmdline
+    int alertPanelH = std::max(4, usableRows / 3);
+    int cmdPanelH   = usableRows - alertPanelH;
+    if (cmdPanelH < 3) { cmdPanelH = 3; alertPanelH = usableRows - cmdPanelH; }
+
+    int sepRow = 1 + cmdPanelH;
+
     // ── Header bar ──────────────────────────────────────────────────────────
     attron(COLOR_PAIR(7) | A_BOLD);
+    for (int i = 0; i < cols; i++) mvaddch(0, i, ' ');
     char hdrBuf[256];
     snprintf(hdrBuf, sizeof(hdrBuf),
-             " ◈ MONITOR VIEWER  server=%s:%d  Developed by group1_H@ckErUSTH ",
+             " ◈ MONITOR VIEWER  server=%s:%d  group1_H@ckErUSTH",
              host.c_str(), port);
-    for (int i = 0; i < cols; i++) mvaddch(0, i, ' ');
     mvaddstr(0, 1, hdrBuf);
-    int tsLen = 8; mvaddstr(0, cols - tsLen - 1, nowStr(time(nullptr)).c_str());
+    mvaddstr(0, cols - 9, nowStr(time(nullptr)).c_str());
     attroff(COLOR_PAIR(7) | A_BOLD);
 
-    // ── Determine layout: split screen ──────────────────────────────────────
-    // Dashboard gets bottom 1/3, command output gets top 2/3
-    // Reserve: 1 row header, 2 rows footer (status + cmd), 1 row separator
-    int usableRows = rows - 4; // header(1) + status(1) + cmdline(1) + separator(1)
-    int dashRows = 0;
-    std::vector<std::string> dashLines;
-    {
-      std::lock_guard<std::mutex> lk(g_bcastMtx);
-      dashLines = g_bcastLines;
-    }
-
-    if (!dashLines.empty()) {
-      dashRows = std::min((int)dashLines.size(), usableRows / 3);
-      if (dashRows < 3) dashRows = std::min(3, usableRows / 2);
-    }
-    int outputRows = usableRows - dashRows;
-    if (outputRows < 3) outputRows = 3;
-
-    // ── Top section: command output ─────────────────────────────────────────
+    // ── Command output panel (top) ──────────────────────────────────────────
     int startLine = 0;
-    if ((int)outputLines.size() > outputRows)
-      startLine = (int)outputLines.size() - outputRows;
-    for (int i = 0; i < outputRows && startLine + i < (int)outputLines.size(); i++) {
+    if ((int)outputLines.size() > cmdPanelH)
+      startLine = (int)outputLines.size() - cmdPanelH;
+    for (int i = 0; i < cmdPanelH && startLine + i < (int)outputLines.size(); i++) {
       const std::string &ln = outputLines[startLine + i];
       mvaddnstr(1 + i, 0, ln.c_str(), cols - 1);
     }
 
-    // ── Dashboard separator + live broadcast ────────────────────────────────
-    if (dashRows > 0 && !dashLines.empty()) {
-      int sepRow = 1 + outputRows;
-      attron(COLOR_PAIR(8) | A_BOLD);
-      mvhline(sepRow, 0, ' ', cols);
-      std::string dashTitle = g_bcastConnected.load()
-        ? " ▼ LIVE DASHBOARD (broadcast) "
-        : " ▼ LIVE DASHBOARD (reconnecting...) ";
-      mvaddstr(sepRow, 1, dashTitle.c_str());
-      attroff(COLOR_PAIR(8) | A_BOLD);
+    // ── Separator line / Alert panel header ─────────────────────────────────
+    attron(COLOR_PAIR(8) | A_BOLD);
+    for (int i = 0; i < cols; i++) mvaddch(sepRow, i, ' ');
+    {
+      int cnt = g_alertCount.load();
+      char sepBuf[128];
+      snprintf(sepBuf, sizeof(sepBuf),
+               " ▼ LIVE ALERTS (%d total) ", cnt);
+      mvaddstr(sepRow, 1, sepBuf);
 
-      int dashStart = sepRow + 1;
-      // Show the last dashRows lines of the broadcast
-      int bcastStart = 0;
-      if ((int)dashLines.size() > dashRows)
-        bcastStart = (int)dashLines.size() - dashRows;
-      for (int i = 0; i < dashRows && bcastStart + i < (int)dashLines.size(); i++) {
-        const std::string &dl = dashLines[bcastStart + i];
-        mvaddnstr(dashStart + i, 0, dl.c_str(), cols - 1);
+      // Show TIME / HOST / DETAIL column headers on right
+      const char *colHdr = "TIME    HOST            DETAIL";
+      int hdrLen = (int)strlen(colHdr);
+      if (cols - hdrLen - 2 > 30)
+        mvaddstr(sepRow, cols - hdrLen - 1, colHdr);
+    }
+    attroff(COLOR_PAIR(8) | A_BOLD);
+
+    // ── Alert panel (bottom) ────────────────────────────────────────────────
+    {
+      std::lock_guard<std::mutex> lk(g_alertMtx);
+      int totalAlerts = (int)g_alertLines.size();
+      int displayRows = alertPanelH;
+      int alertStart = sepRow + 1;
+
+      if (totalAlerts == 0) {
+        attron(COLOR_PAIR(5) | A_DIM);
+        mvaddstr(alertStart, 2, "(no alerts yet — waiting for server broadcast...)");
+        attroff(COLOR_PAIR(5) | A_DIM);
+      } else {
+        // Scroll: alertScroll=0 means show latest at bottom
+        int firstIdx = totalAlerts - displayRows - alertScroll;
+        if (firstIdx < 0) firstIdx = 0;
+
+        for (int i = 0; i < displayRows; i++) {
+          int idx = firstIdx + i;
+          if (idx >= totalAlerts) break;
+          attron(COLOR_PAIR(3)); // red text
+          mvaddstr(alertStart + i, 0, "  !");
+          attroff(COLOR_PAIR(3));
+          attron(COLOR_PAIR(3) | A_BOLD);
+          mvaddnstr(alertStart + i, 3, g_alertLines[idx].c_str(), cols - 4);
+          attroff(COLOR_PAIR(3) | A_BOLD);
+        }
       }
     }
 
@@ -352,15 +382,13 @@ int main(int argc, char **argv) {
       char sb[256]; snprintf(sb, sizeof(sb), " Last: /%s ", lastCmd.c_str());
       mvaddstr(rows - 2, 0, sb);
     }
-    // Show broadcast status on right side
     {
       std::string bstat = g_bcastConnected.load() ? "[LIVE]" : "[OFFLINE]";
-      int blen = (int)bstat.size();
-      mvaddstr(rows - 2, cols - blen - 1, bstat.c_str());
+      mvaddstr(rows - 2, cols - (int)bstat.size() - 1, bstat.c_str());
     }
     attroff(COLOR_PAIR(5));
 
-    // ── Command line ────────────────────────────────────────────────────────
+    // ── Command input line ──────────────────────────────────────────────────
     attron(A_BOLD);
     mvhline(rows - 1, 0, ' ', cols);
     if (cmdMode) {
@@ -370,7 +398,7 @@ int main(int argc, char **argv) {
       attroff(COLOR_PAIR(5) | A_BOLD);
     } else {
       attron(COLOR_PAIR(1));
-      mvaddstr(rows - 1, 0, " [/] command  [q] quit  [↑↓] history");
+      mvaddstr(rows - 1, 0, " [/] command  [q] quit  [↑↓] history  [PgUp/Dn] scroll alerts");
       attroff(COLOR_PAIR(1));
     }
     attroff(A_BOLD);
@@ -381,11 +409,25 @@ int main(int argc, char **argv) {
     int ch = getch();
     if (ch == 'q' || ch == 'Q') break;
 
+    // ── Alert scroll (when not in command mode) ─────────────────────────────
     if (!cmdMode) {
+      if (ch == KEY_PPAGE) { // PgUp — scroll alerts up
+        alertScroll += 3;
+        std::lock_guard<std::mutex> lk(g_alertMtx);
+        int maxScroll = std::max(0, (int)g_alertLines.size() - alertPanelH);
+        if (alertScroll > maxScroll) alertScroll = maxScroll;
+        continue;
+      }
+      if (ch == KEY_NPAGE) { // PgDn — scroll alerts down
+        alertScroll -= 3;
+        if (alertScroll < 0) alertScroll = 0;
+        continue;
+      }
       if (ch == '/') { cmdMode = true; cmd.clear(); histIdx = -1; }
       continue;
     }
 
+    // ── Command mode input ──────────────────────────────────────────────────
     if (ch == 27) { cmdMode = false; cmd.clear(); histIdx = -1; continue; }
     if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
       if (!cmd.empty()) cmd.pop_back();
@@ -419,6 +461,7 @@ int main(int argc, char **argv) {
       continue;
     }
 
+    // ── Execute command ─────────────────────────────────────────────────────
     std::string c = trim(cmd);
     cmdMode = false; cmd.clear(); histIdx = -1;
     if (c.empty()) continue;
@@ -443,16 +486,25 @@ int main(int argc, char **argv) {
     }
     lastCmd = c;
 
-    if (verb == "clear") { outputLines.clear(); continue; }
+    if (verb == "clear") {
+      outputLines.clear();
+      {
+        std::lock_guard<std::mutex> lk(g_alertMtx);
+        g_alertLines.clear();
+      }
+      g_alertCount = 0;
+      alertScroll = 0;
+      continue;
+    }
     if (verb == "help") {
       outputLines = {
         "Commands:",
         "  /hosts              - All hosts with status, CPU/RAM/DISK/LOAD",
         "  /history <host> [n] - Last n minutes metric samples for a host",
         "  /log [n]            - Last n minutes log events",
-        "  /clear              - Clear output",
+        "  /clear              - Clear command output & alerts",
         "",
-        "Use Up/Down arrows to browse command history.",
+        "Keys: Up/Down = history, PgUp/PgDn = scroll alerts",
       };
       continue;
     }
@@ -541,6 +593,9 @@ int main(int argc, char **argv) {
         if ((int)outputLines.size() > 500) break;
       }
     }
+
+    // Reset alert scroll to show latest when user runs a command
+    alertScroll = 0;
   }
 
   g_running = false;

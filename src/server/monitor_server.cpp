@@ -198,6 +198,46 @@ static void handleClient(int fd, std::string ip) {
       g_stats.msgsTotal++;
       auto [prev, cur] = g_store.upsert(p, g_thresh);
 
+      // ── Event-driven alert broadcast ──────────────────────────────
+      if (cur == HostStatus::ALERT) {
+        // Build ALERT_EVT JSON with details
+        std::string alertJson = "ALERT_EVT {";
+        alertJson += "\"host\":\"" + host + "\",";
+        // Determine which metrics triggered the alert
+        std::string metrics;
+        if (cpu >= g_thresh.getCPU(host)) {
+          if (!metrics.empty()) metrics += ",";
+          metrics += "\"CPU\"";
+          alertJson += "\"cpu\":" + std::to_string((int)cpu) + ",";
+          alertJson += "\"cpu_threshold\":" + std::to_string((int)g_thresh.getCPU(host)) + ",";
+        }
+        if (ram >= g_thresh.getRAM(host)) {
+          if (!metrics.empty()) metrics += ",";
+          metrics += "\"RAM\"";
+          alertJson += "\"ram\":" + std::to_string((int)ram) + ",";
+          alertJson += "\"ram_threshold\":" + std::to_string((int)g_thresh.getRAM(host)) + ",";
+        }
+        if (disk >= g_thresh.getDisk(host)) {
+          if (!metrics.empty()) metrics += ",";
+          metrics += "\"DISK\"";
+          alertJson += "\"disk\":" + std::to_string((int)disk) + ",";
+          alertJson += "\"disk_threshold\":" + std::to_string((int)g_thresh.getDisk(host)) + ",";
+        }
+        alertJson += "\"metrics\":[" + metrics + "],";
+        alertJson += "\"timestamp\":" + std::to_string((long long)ts);
+        alertJson += "}\n";
+
+        // Broadcast outside lock
+        std::vector<int> fds;
+        {
+          std::lock_guard<std::mutex> lk(g_viewerPushMtx);
+          fds = g_viewerPushFds;
+        }
+        for (int pushFd : fds) {
+          (void)write(pushFd, alertJson.c_str(), alertJson.size());
+        }
+      }
+
       if (g_alerter && g_alerter->maybeAlert(host, prev, cur, cpu, ram, disk))
         g_stats.alertsSent++;
 
