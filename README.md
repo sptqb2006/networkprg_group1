@@ -1,152 +1,120 @@
-# Distributed System Monitor
-
-A **btop++-style** distributed monitoring tool written in C++20 — real-time ncurses dashboard, multi-host, no external dependencies beyond ncurses.
+<div align="center">
+  <h1>🚀 Distributed System Monitor</h1>
+  <p><b>A high-performance, real-time distributed telemetry and alerting system built in modern C++20.</b></p>
+  <p>
+    <i>Designed for scale, built for speed, tailored for absolute observability.</i>
+  </p>
+</div>
 
 ---
 
-## 1. Install Dependencies
+## 🌟 Project Overview
 
-```bash
-# Debian / Ubuntu
-sudo apt install g++ libncurses-dev
+**Distributed System Monitor** is a lightweight yet immensely powerful telemetry solution designed to track CPU, Memory, and Disk usage across a vast fleet of servers. 
 
-# Fedora / RHEL
-sudo dnf install gcc-c++ ncurses-devel
+Rather than relying on resource-heavy web dashboards, this project embraces the hacker ethos: **a blazing-fast, pure TCP-socket-based architecture** featuring a split-screen `ncurses` command-line viewer. With millisecond-latency broadcast alerts, intelligent stale-node detection, and per-host custom thresholds, this system proves that enterprise-grade observability doesn't need to be bloated.
 
-# Arch Linux
-sudo pacman -S gcc ncurses
+### 🏗 Architecture Flow
+
+```text
+ ┌───────────────┐                             ┌─────────────────────────┐
+ │   Agent #1    ├──────.                      │  Viewer CLI (Admin)     │
+ │ (web-1 nodes) │      │                      │ ┌─────────────────────┐ │
+ └───────────────┘      │    JSON / TCP        │ │ > /history web-1 10 │ │
+ ┌───────────────┐      │   (Port 8784)        │ │ [..] OK             │ │
+ │   Agent #2    ├──────)─────▶ [ MONITOR SERVER ]─┼─────────────────────┼─│
+ │ (db cluster)  │      │                      │ │ ▼ LIVE ALERTS       │ │
+ └───────────────┘      │    Broadcast TCP     │ │ [!] CPU=95%(>80%)   │ │
+ ┌───────────────┐      │   (Port 8785)        │ └─────────────────────┘ │
+ │   Agent #N    ├──────'                      └─────────────────────────┘
+ │ (edge nodes)  │                                          ▲
+ └───────────────┘                                          │
+                                                       More Viewers...
 ```
 
-Requires GCC 10+ or Clang 12+. The **agent** is Linux-only (reads `/proc`). The server and viewer work on any Linux machine with ncurses.
+---
+
+## 🔥 Enterprise-Grade Features
+
+*   ⚡ **Ultra-Lightweight Agents:** Written in pure C++ polling `/proc`. Near-zero CPU overhead. Auto-reconnects seamlessly if the network drops.
+*   📡 **Event-Driven Alert Broadcast:** Detection is instant. When a host breaches its threshold, the server immediately pushes an `ALERT_EVT` frame to all connected viewers without polling delays.
+*   🎛 **Dual-Panel Ncurses Dashboard:** The `viewer_cli` features a gorgeous split-screen UI:
+    *   **Top:** Interactive command prompt (`/hosts`, `/history`, `/log`) with command history (↑/↓).
+    *   **Bottom:** Real-time scrolling feed of incoming alerts.
+*   ⏱ **Smart State Machine:** Nodes transition smoothly: `ONLINE` ➔ `STALE` (high-latency/delayed packets) ➔ `OFFLINE` (dead).
+*   🎯 **Granular Threshold Configuration:** Global limits (e.g., CPU=80%) with per-host overrides (e.g., `web-1.cpu=85`, `db.ram=95`) instantly loaded without recompiling.
+*   🕒 **Time-Series Engine:** Queries operate on absolute time windows (e.g., "Give me the last 15 minutes of logs") instead of simple flat counts.
 
 ---
 
-## 2. Build
+## 🛠 Getting Started
 
+### 1. Build the System
+Only requires a modern C++ compiler (`g++` / `clang++`), `make`, and `ncurses-dev`.
 ```bash
 ./build.sh
 ```
+*(This complies all three binaries: `agent`, `monitor_server`, and `viewer_cli`)*
 
-This produces three binaries in the project root: `monitor_server`, `agent`, and `viewer_cli`.
-
-Alternatively, use CMake:
-```bash
-mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc)
-```
-
----
-
-## 3. Run
-
-```bash
-# Terminal 1 — start the server (opens the dashboard)
-./monitor_server
-
-# Terminal 2 — connect an agent for each machine you want to monitor
-./agent -server 127.0.0.1:8784 -name web-1
-
-# Terminal 3 — (optional) open the interactive viewer
-./viewer_cli -server 127.0.0.1:8785
-```
-
-> **Terminal size:** minimum 60×15, recommended 120×35 or larger.
-
-
----
-
-## 4. Dashboard Controls
-
-| Key | Action |
-|-----|--------|
-| `Q` | Quit |
-| `Tab` / `Shift+Tab` | Next / previous host detail |
-| `Esc` | Back to overview |
-| `↑` `↓` / `PgUp` `PgDn` | Scroll log or history |
-| `U` | Cycle themes (6 built-in, requires 256-color terminal) |
-| `/` | Open command bar (`/help`, `/viewer <host>`, `/history <host>`) |
-
----
-
-## 5. Viewer CLI Commands
-
-Press `/` inside the viewer:
-
-| Command | Description |
-|---------|-------------|
-| `/hosts` | List all hosts with status, CPU, RAM, disk, load |
-| `/history <host> [n]` | Last `n` metric samples (default 30) |
-| `/log [n]` | Last `n` event log entries (default 50) |
-| `q` | Quit |
-
----
-
-## 6. Host Status
-
-| Symbol | Meaning |
-|--------|---------|
-| `● OK` | Online, all metrics below threshold |
-| `◐ WARN` | A metric is nearing its threshold (≥ 80%) |
-| `● ALERT` | A metric exceeds its threshold |
-| `◌ STALE` | No data received for `STALE_SEC` seconds (default 30s) |
-| `○ OFFLINE` | No data received for `OFFLINE_SEC` seconds (default 90s) |
-
----
-
-## 7. Configuration
-
-### Alert thresholds — `config/thresholds.conf`
-
+### 2. Configure Thresholds
+Edit `config/thresholds.conf` to set your system limits:
 ```ini
 CPU=80
 RAM=90
 DISK=85
 
-# Per-host overrides
-web-1.cpu=85
-db-server.ram=95
+# Override for specific critical hosts
+database-primary.ram=95
+render-worker.cpu=98
 ```
 
-### Server settings — `config/server.conf`
-
-Key options (see the file for all settings):
-
-```ini
-MAX_AGENTS_PER_IP=2
-STALE_SEC=30
-OFFLINE_SEC=90
-#AUTH_TOKEN=changeme        # uncomment to require auth
-#ALERT_WEBHOOK_URL=https://hooks.slack.com/...
-HTTP_API_PORT=8786          # 0 = disabled
+### 3. Launch the Core Infrastructure
+Start the central nervous system:
+```bash
+./monitor_server -port 8784 -vport 8785 -config config/thresholds.conf
 ```
 
-### Agent settings — `config/agent.conf`
+Deploy agents on your target machines (or locally for testing):
+```bash
+# Agent 1 will push metrics every 2 seconds
+./agent -server 127.0.0.1:8784 -interval 2 -name backend-api-01
+```
 
-```ini
-MAX_CONNECT_RETRIES=12      # 0 = retry forever
-RECONNECT_INTERVAL_SEC=5
-#AUTH_TOKEN=changeme        # must match server if set
+### 4. Connect the Admin Viewer
+Gain absolute visibility into your cluster:
+```bash
+./viewer_cli -server 127.0.0.1:8785
 ```
 
 ---
 
-## 8. Common Flags
+## 💻 Viewer CLI Command Reference
 
-**Server:**
-```bash
-./monitor_server -port 8784 -vport 8785 -config config/thresholds.conf -server-config config/server.conf
-```
+Once inside the `viewer_cli`, type `/` to enter command mode:
 
-**Agent:**
-```bash
-./agent -server <ip>:8784 -name <hostname> -interval 2 -disk / -fg
-```
-`-fg` keeps the agent in the foreground (default is daemon mode).
+| Command | Description |
+|---|---|
+| `/hosts` | Live matrix of all registered agents (Host, Status, Metrics, Last Seen). |
+| `/history <host> [mins]` | Retrieves historical telemetry for `<host>` over the last `[mins]` minutes. |
+| `/log [mins]` | Dumps the cluster-wide event & alert log for the past `[mins]` minutes. |
+| `/clear` | Clears both the command output and the live alert panels. |
+| `q` or `Esc` | Quit / Cancel command. |
+
+**Keyboard Shortcuts:**
+*   **`Up / Down`**: Scroll through command output (Normal mode) OR browse command history (Command mode).
+*   **`PgUp / PgDn`**: Scroll through the bottom Live Alerts panel.
 
 ---
 
-## Going Further
+## 🚀 Potential & Future Scaling
 
-- **systemd:** unit files are in `deploy/` for running server and agents as services.
-- **Docker:** a multi-stage `Dockerfile` is included; use `--pid host` for the agent container so it can read `/proc`.
-- **HTTP API / Prometheus:** enable with `HTTP_API_PORT=8786` in `server.conf` — endpoints at `/api/hosts`, `/api/history/<host>`, `/metrics`, `/healthz`.
-- **Security:** for internet-facing use, set `AUTH_TOKEN` in both config files and put the ports behind a VPN or SSH tunnel (TLS is not built in).
+This project is architected as the foundation for a massive-scale observability pipeline. Its pure TCP/JSON nature means it can be expanded boundlessly:
+1.  **Prometheus/Grafana Bridge:** The server can easily expose a `/metrics` HTTP endpoint to allow scraping by Prometheus.
+2.  **WebHook Integration:** Add Slack/Discord/PagerDuty webhook POST requests when a host hits `OFFLINE` or `ALERT`.
+3.  **Encrypted Telemetry:** Wrap the TCP sockets in TLS (OpenSSL) for zero-trust cross-datacenter monitoring.
+4.  **Database Persistence:** Route historical metric streams directly into TimescaleDB or InfluxDB for infinite data retention.
+
+---
+<div align="center">
+  <i>Developed with ❤️ by group1_H@ckErUSTH</i>
+</div>
