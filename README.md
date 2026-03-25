@@ -51,13 +51,6 @@ mkdir build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j$(nproc
 
 > **Terminal size:** minimum 60×15, recommended 120×35 or larger.
 
-### Try the demo instead
-
-```bash
-./run_demo_terminals.sh              # starts server + 2 agents + viewer automatically
-./run_demo_terminals.sh --agents 4   # more agents
-./stop_agents.sh                     # kill background agents when done
-```
 
 ---
 
