@@ -20,7 +20,7 @@
 #  include <curses.h>
 #endif
 
-// ── Utility ─────────────────────────────────────────────────────────────────
+// -- Utility-- 
 static std::string trim(const std::string &s) {
   auto b = s.find_first_not_of(" \t\r\n");
   auto e = s.find_last_not_of(" \t\r\n");
@@ -121,7 +121,7 @@ static int statusColor(const std::string &st) {
   return 1;
 }
 
-// ── Color pairs ─────────────────────────────────────────────────────────────
+// -- Color pairs-- 
 enum ColorPairs {
   CP_DEFAULT = 1, CP_GREEN, CP_RED, CP_YELLOW, CP_CYAN, CP_MAGENTA,
   CP_HEADER,   // white on blue
@@ -153,7 +153,7 @@ static void initViewerColors() {
   }
 }
 
-// ── Global state for broadcast receiver ─────────────────────────────────────
+// -- Global state for broadcast receiver-- 
 static std::mutex g_alertMtx;
 static std::vector<std::string> g_alertLines;
 static const int MAX_ALERT_LINES = 200;
@@ -238,7 +238,7 @@ static void broadcastReceiver(const std::string &host, uint16_t port) {
   }
 }
 
-// ── Safe window draw helpers ────────────────────────────────────────────────
+// -- Safe window draw helpers-- 
 static void wDrawLine(WINDOW *w, int y, int x, const std::string &s, int maxCols) {
   wmove(w, y, x);
   waddnstr(w, s.c_str(), maxCols - x);
@@ -295,7 +295,7 @@ int main(int argc, char **argv) {
   WINDOW *inputWin = nullptr; // command input
 
   outputLines = {
-    "viewer_cli — Monitor Query Client",
+    "viewer_cli -- Monitor Query Client",
     "",
     "Commands:",
     "  /hosts              - List all hosts with current status",
@@ -305,14 +305,14 @@ int main(int argc, char **argv) {
     "  /clear              - Clear output / clear alerts",
     "",
     "Press '/' to enter a command, Esc to cancel, q to quit.",
-    "[↑↓] Scroll command output   [PgUp/Dn] Scroll alerts",
+    "[Up/Down] Scroll command output   [PgUp/Dn] Scroll alerts",
   };
 
   while (true) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    // ── Detect resize → recreate windows ────────────────────────────────
+    // -- Detect resize => recreate windows-- 
     if (rows != prevRows || cols != prevCols) {
       prevRows = rows; prevCols = cols;
       g_needsRedraw = true;
@@ -350,7 +350,7 @@ int main(int argc, char **argv) {
         keypad(w, TRUE);
     }
 
-    // ── Input handling (timeout-based, non-blocking) ────────────────────
+    // -- Input handling (timeout-based, non-blocking)-- 
     timeout(50); // 50ms wait, returns ERR if no key
     int ch = getch();
 
@@ -360,7 +360,7 @@ int main(int argc, char **argv) {
     if (ch == 'q' || ch == 'Q') break;
 
     if (!cmdMode) {
-      // ── Normal mode key handling ──────────────────────────────────
+      // -- Normal mode key handling-- 
       if (ch == '/') {
         cmdMode = true; cmd.clear(); histIdx = -1;
       } else if (ch == KEY_UP) {
@@ -380,7 +380,7 @@ int main(int argc, char **argv) {
         if (alertScroll < 0) alertScroll = 0;
       }
     } else {
-      // ── Command mode key handling ─────────────────────────────────
+      // -- Command mode key handling-- 
       if (ch == 27) {
         cmdMode = false; cmd.clear(); histIdx = -1;
       } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
@@ -403,7 +403,7 @@ int main(int argc, char **argv) {
           }
         }
       } else if (ch == '\n' || ch == KEY_ENTER) {
-        // ── Execute command ─────────────────────────────────────────
+        // -- Execute command-- 
         std::string c = trim(cmd);
         cmdMode = false; cmd.clear(); histIdx = -1;
 
@@ -440,8 +440,8 @@ int main(int argc, char **argv) {
               "  /log [n]            - Last n minutes log events",
               "  /clear              - Clear output & alerts",
               "",
-              "Normal mode:  ↑↓ scroll output  PgUp/Dn scroll alerts",
-              "Command mode: ↑↓ browse history",
+              "Normal mode:  Up/Down scroll output  PgUp/Dn scroll alerts",
+              "Command mode: Up/Down browse history",
             };
           } else {
             outputLines.clear();
@@ -547,7 +547,7 @@ done:
       }
     }
 
-    // ── Periodic redraw (time-based, for clock update) ──────────────────
+    // -- Periodic redraw (time-based, for clock update)-- 
     {
       static auto lastClock = std::chrono::steady_clock::now();
       auto now = std::chrono::steady_clock::now();
@@ -557,7 +557,7 @@ done:
       }
     }
 
-    // ── Only redraw when needed ─────────────────────────────────────────
+    // -- Only redraw when needed-- 
     if (!g_needsRedraw.exchange(false))
       continue;
 
@@ -567,13 +567,13 @@ done:
     int cmdH   = getmaxy(cmdWin);
     int alertH = getmaxy(alertWin);
 
-    // ── Draw header bar ─────────────────────────────────────────────────
+    // -- Draw header bar-- 
     werase(hdrWin);
     wbkgd(hdrWin, COLOR_PAIR(CP_HEADER));
     wattron(hdrWin, A_BOLD);
     {
       char hb[256];
-      snprintf(hb, sizeof(hb), " ◈ MONITOR VIEWER  server=%s:%d  group1_H@ckErUSTH",
+      snprintf(hb, sizeof(hb), " [*] MONITOR VIEWER  server=%s:%d  group1_H@ckErUSTH",
                host.c_str(), port);
       wDrawLine(hdrWin, 0, 0, hb, cols);
       std::string ts = nowStr(time(nullptr));
@@ -582,7 +582,7 @@ done:
     wattroff(hdrWin, A_BOLD);
     wnoutrefresh(hdrWin);
 
-    // ── Draw command output panel ───────────────────────────────────────
+    // -- Draw command output panel-- 
     werase(cmdWin);
     {
       int total = (int)outputLines.size();
@@ -597,21 +597,21 @@ done:
       if (cmdScroll > 0) {
         wattron(cmdWin, COLOR_PAIR(CP_CYAN) | A_DIM);
         char si[32];
-        snprintf(si, sizeof(si), " [↑%d more] ", cmdScroll);
+        snprintf(si, sizeof(si), " [^%d more] ", cmdScroll);
         mvwaddstr(cmdWin, cmdH - 1, cols - (int)strlen(si) - 1, si);
         wattroff(cmdWin, COLOR_PAIR(CP_CYAN) | A_DIM);
       }
     }
     wnoutrefresh(cmdWin);
 
-    // ── Draw separator ──────────────────────────────────────────────────
+    // -- Draw separator-- 
     werase(sepWin);
     wbkgd(sepWin, COLOR_PAIR(CP_ALERT_HDR));
     wattron(sepWin, A_BOLD);
     {
       int cnt = g_alertCount.load();
       char sb[128];
-      snprintf(sb, sizeof(sb), " ▼ LIVE ALERTS (%d total) ", cnt);
+      snprintf(sb, sizeof(sb), " >> LIVE ALERTS (%d total) ", cnt);
       wDrawLine(sepWin, 0, 0, sb, cols);
       const char *colHdr = "TIME    HOST            DETAIL";
       int hLen = (int)strlen(colHdr);
@@ -621,14 +621,14 @@ done:
     wattroff(sepWin, A_BOLD);
     wnoutrefresh(sepWin);
 
-    // ── Draw alert panel ────────────────────────────────────────────────
+    // -- Draw alert panel-- 
     werase(alertWin);
     {
       std::lock_guard<std::mutex> lk(g_alertMtx);
       int total = (int)g_alertLines.size();
       if (total == 0) {
         wattron(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
-        wDrawLine(alertWin, 0, 2, "(no alerts yet — waiting for broadcast...)", cols);
+        wDrawLine(alertWin, 0, 2, "(no alerts yet -- waiting for broadcast...)", cols);
         wattroff(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
       } else {
         int firstIdx = total - alertH - alertScroll;
@@ -646,7 +646,7 @@ done:
         if (alertScroll > 0) {
           wattron(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
           char si[32];
-          snprintf(si, sizeof(si), " [↓%d more] ", alertScroll);
+          snprintf(si, sizeof(si), " [v%d more] ", alertScroll);
           mvwaddstr(alertWin, alertH - 1, cols - (int)strlen(si) - 1, si);
           wattroff(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
         }
@@ -654,7 +654,7 @@ done:
     }
     wnoutrefresh(alertWin);
 
-    // ── Draw status bar ─────────────────────────────────────────────────
+    // -- Draw status bar-- 
     werase(statWin);
     wbkgd(statWin, COLOR_PAIR(CP_CYAN));
     wattron(statWin, COLOR_PAIR(CP_CYAN));
@@ -669,7 +669,7 @@ done:
     wattroff(statWin, COLOR_PAIR(CP_CYAN));
     wnoutrefresh(statWin);
 
-    // ── Draw command input line ─────────────────────────────────────────
+    // -- Draw command input line-- 
     werase(inputWin);
     wattron(inputWin, A_BOLD);
     if (cmdMode) {
@@ -679,13 +679,13 @@ done:
     } else {
       wattron(inputWin, COLOR_PAIR(CP_DEFAULT));
       wDrawLine(inputWin, 0, 0,
-        " [/] command  [q] quit  [↑↓] scroll output  [PgUp/Dn] scroll alerts", cols);
+        " [/] command  [q] quit  [Up/Dn] scroll output  [PgUp/Dn] scroll alerts", cols);
       wattroff(inputWin, COLOR_PAIR(CP_DEFAULT));
     }
     wattroff(inputWin, A_BOLD);
     wnoutrefresh(inputWin);
 
-    // ── Single screen update ────────────────────────────────────────────
+    // -- Single screen update-- 
     doupdate();
   }
 

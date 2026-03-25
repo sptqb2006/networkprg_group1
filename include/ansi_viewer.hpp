@@ -45,8 +45,8 @@ static std::string makeBar(float pct, int width) {
   if (filled < 0) filled = 0;
   if (filled > width) filled = width;
   std::string bar;
-  for (int i = 0; i < filled; i++) bar += "█";
-  for (int i = filled; i < width; i++) bar += "░";
+  for (int i = 0; i < filled; i++) bar += "#";
+  for (int i = filled; i < width; i++) bar += "-";
   return bar;
 }
 
@@ -57,11 +57,11 @@ static std::string padRight(const std::string &s, int n) {
 
 static std::string statusSymbol(HostStatus s) {
   switch (s) {
-  case HostStatus::ALERT:   return std::string(ARED) + "● ALERT" + RST;
-  case HostStatus::WARNING: return std::string(AYEL) + "◐ WARN" + RST;
-  case HostStatus::STALE:   return std::string("\033[0;35m") + "◌ STALE" + RST;
-  case HostStatus::ONLINE:  return std::string(AGRN) + "● OK" + RST;
-  case HostStatus::OFFLINE: return std::string(AGRY) + "○ OFF" + RST;
+  case HostStatus::ALERT:   return std::string(ARED) + "[!] ALERT" + RST;
+  case HostStatus::WARNING: return std::string(AYEL) + "[~] WARN" + RST;
+  case HostStatus::STALE:   return std::string("\033[0;35m") + "[?] STALE" + RST;
+  case HostStatus::ONLINE:  return std::string(AGRN) + "[.] OK" + RST;
+  case HostStatus::OFFLINE: return std::string(AGRY) + "[ ] OFF" + RST;
   }
   return "?";
 }
@@ -96,7 +96,7 @@ inline std::string renderFrame(const std::vector<HostState> &hosts,
   int threat = std::min(100, alert * 30 + warn * 10 + (int)(avgCpu * 0.2f));
 
   std::string ts = fmtTime(time(nullptr));
-  o << ABGCYN << BOLD << " " << ts << "  ◈ DISTRIBUTED SYSTEM MONITOR ◈"
+  o << ABGCYN << BOLD << " " << ts << "  [*] DISTRIBUTED SYSTEM MONITOR [*]"
     << "  [nc viewer - read only]" << RST << "\n";
   o << ACYN << line('=') << RST << "\n";
 
@@ -125,7 +125,7 @@ inline std::string renderFrame(const std::vector<HostState> &hosts,
   for (const auto &h : hosts) {
     std::string name = padRight(h.name, 14);
     if (h.status == HostStatus::OFFLINE || h.status == HostStatus::STALE) {
-      auto stlbl = (h.status == HostStatus::STALE) ? "\033[0;35m◌ STALE" : "○ OFFLINE";
+      auto stlbl = (h.status == HostStatus::STALE) ? "\033[0;35m[?] STALE" : "[ ] OFFLINE";
       o << AGRY << DIM << " " << name << "  --- " << stlbl << " ---" << RST << "\n";
       continue;
     }
