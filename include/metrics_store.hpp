@@ -76,7 +76,7 @@ struct HostState {
   std::vector<float> cores;
   int coreCount = 0;
 
-  void push(const MetricPayload &p) {
+  void push(const MetricPayload &p, int maxHistory) {
     cpu = p.cpu; ram = p.ram; disk = p.disk;
     netRxKB = p.netRxKB; netTxKB = p.netTxKB;
     loadAvg = p.loadAvg; procCount = p.procCount;
@@ -85,7 +85,7 @@ struct HostState {
     coreCount = (int)p.cores.size();
     history.push_back({p.timestamp, p.cpu, p.ram, p.disk, p.netRxKB, p.netTxKB,
                        p.loadAvg, p.procCount});
-    if (history.size() > MAX_HISTORY)
+    if ((int)history.size() > maxHistory)
       history.pop_front();
   }
 };
@@ -108,7 +108,7 @@ public:
     HostStatus prev = h.status;
     h.name = p.host;
     h.ip = p.ip;
-    h.push(p);
+    h.push(p, maxHistory_);
 
     bool alert = (p.cpu >= thresh.getCPU(p.host)) ||
                  (p.ram >= thresh.getRAM(p.host)) ||
@@ -251,16 +251,19 @@ public:
     return o;
   }
 
-  std::string historyJson(const std::string &host, int n) const {
+  std::string historyJson(const std::string &host, int nMinutes) const {
     std::lock_guard<std::mutex> lk(mtx_);
     auto it = hosts_.find(host);
     if (it == hosts_.end()) return "[]";
     const auto &hist = it->second.history;
-    int start = std::max(0, (int)hist.size() - n);
+    time_t cutoff = time(nullptr) - nMinutes * 60;
     std::string o = "[";
-    for (int i = start; i < (int)hist.size(); i++) {
-      if (i > start) o += ',';
+    bool first = true;
+    for (int i = 0; i < (int)hist.size(); i++) {
       const auto &s = hist[i];
+      if (s.ts < cutoff) continue;
+      if (!first) o += ',';
+      first = false;
       char buf[256];
       snprintf(buf, sizeof(buf),
                "{\"ts\":%lld,\"cpu\":%.1f,\"ram\":%.1f,\"disk\":%.1f,"
@@ -272,14 +275,17 @@ public:
     return o;
   }
 
-  std::string logJson(int n) const {
+  std::string logJson(int nMinutes) const {
     std::lock_guard<std::mutex> lk(mtx_);
-    int start = std::max(0, (int)log_.size() - n);
+    time_t cutoff = time(nullptr) - nMinutes * 60;
     std::string o = "[";
     static const char *typeNames[] = {"CONNECT", "METRIC", "ALERT", "DISCONNECT", "STALE"};
-    for (int i = start; i < (int)log_.size(); i++) {
-      if (i > start) o += ',';
+    bool first = true;
+    for (int i = 0; i < (int)log_.size(); i++) {
       const auto &ev = log_[i];
+      if (ev.ts < cutoff) continue;
+      if (!first) o += ',';
+      first = false;
       int ti = std::min((int)ev.type, 4);
       char buf[512];
       snprintf(buf, sizeof(buf),
@@ -340,9 +346,9 @@ public:
       if (h.name.empty()) h.name = host;
       for (int i = start; i < (int)samples.size(); i++)
         h.history.push_back(samples[i]);
-      if ((int)h.history.size() > MAX_HISTORY)
+      if ((int)h.history.size() > maxHistory_)
         h.history.erase(h.history.begin(),
-                        h.history.begin() + (h.history.size() - MAX_HISTORY));
+                        h.history.begin() + (h.history.size() - maxHistory_));
     }
   }
 
@@ -411,17 +417,27 @@ public:
     return true;
   }
 
+public:
+  void setMaxEntries(int maxHist, int maxLog) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    maxHistory_ = maxHist;
+    maxLogs_ = maxLog;
+  }
+
 private:
   void pushLog(const LogEvent &ev) {
     log_.push_back(ev);
-    if (log_.size() > MAX_LOG_ENTRIES)
+    if ((int)log_.size() > maxLogs_)
       log_.pop_front();
   }
+
   mutable std::mutex mtx_;
   std::unordered_map<std::string, HostState> hosts_;
   std::deque<LogEvent> log_;
   std::string historyDir_;
   int historyMaxLines_ = 10000;
+  int maxHistory_ = DEFAULT_MAX_HISTORY;
+  int maxLogs_ = DEFAULT_MAX_LOG_ENTRIES;
 };
 
 } // namespace monitor

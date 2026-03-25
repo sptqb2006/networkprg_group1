@@ -3,9 +3,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -121,6 +123,7 @@ static void initViewerColors() {
   init_pair(5, COLOR_CYAN,    -1);
   init_pair(6, COLOR_MAGENTA, -1);
   init_pair(7, COLOR_WHITE,   COLOR_BLUE);
+  init_pair(8, COLOR_WHITE,   COLOR_BLACK); // dashboard border
   if (COLORS >= 256) {
     init_pair(2,  46,  -1);
     init_pair(3, 196,  -1);
@@ -128,6 +131,7 @@ static void initViewerColors() {
     init_pair(5, 153,  -1);
     init_pair(6, 141,  -1);
     init_pair(7,  15,  17);
+    init_pair(8, 153,  236);
   }
 }
 
@@ -137,6 +141,92 @@ static int statusColor(const std::string &st) {
   if (st == "STALE")   return 6;
   if (st == "OK")      return 2;
   return 1;
+}
+
+// ── Broadcast receiver ──────────────────────────────────────────────────────
+// Strips ANSI escape sequences and splits into lines for ncurses rendering.
+static std::string stripAnsi(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  bool inEsc = false;
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '\033') { inEsc = true; continue; }
+    if (inEsc) {
+      // ESC [ ... <letter> ends the sequence
+      if ((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z'))
+        inEsc = false;
+      continue;
+    }
+    out += s[i];
+  }
+  return out;
+}
+
+static std::vector<std::string> splitLines(const std::string &s) {
+  std::vector<std::string> lines;
+  std::istringstream iss(s);
+  std::string line;
+  while (std::getline(iss, line)) {
+    // remove trailing CR
+    while (!line.empty() && line.back() == '\r') line.pop_back();
+    lines.push_back(line);
+  }
+  return lines;
+}
+
+// Global broadcast state
+static std::mutex g_bcastMtx;
+static std::vector<std::string> g_bcastLines;
+static std::atomic<bool> g_bcastConnected{false};
+static std::atomic<bool> g_running{true};
+
+static void broadcastReceiver(const std::string &host, uint16_t port) {
+  while (g_running) {
+    int fd = connectTo(host, port);
+    if (fd < 0) {
+      g_bcastConnected = false;
+      // Retry after 2s
+      for (int i = 0; i < 20 && g_running; i++)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+    g_bcastConnected = true;
+
+    struct timeval tv{}; tv.tv_sec = 5;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    std::string buffer;
+    char buf[8192];
+    while (g_running) {
+      int n = recv(fd, buf, sizeof(buf), 0);
+      if (n <= 0) {
+        if (n == 0) break; // server closed
+        // timeout — just retry recv
+        continue;
+      }
+      buffer.append(buf, n);
+
+      // If buffer contains screen clear sequence, take the latest full frame
+      // The frame is delimited by CLR = \033[2J\033[H
+      std::string clr = "\033[2J\033[H";
+      auto lastClr = buffer.rfind(clr);
+      if (lastClr != std::string::npos) {
+        std::string frame = buffer.substr(lastClr + clr.size());
+        // Strip ANSI for ncurses rendering
+        std::string clean = stripAnsi(frame);
+        auto lines = splitLines(clean);
+        {
+          std::lock_guard<std::mutex> lk(g_bcastMtx);
+          g_bcastLines = std::move(lines);
+        }
+        buffer.clear();
+      }
+      // Prevent buffer from growing unbounded
+      if (buffer.size() > 65536) buffer.clear();
+    }
+    close(fd);
+    g_bcastConnected = false;
+  }
 }
 
 int main(int argc, char **argv) {
@@ -161,29 +251,41 @@ int main(int argc, char **argv) {
   keypad(stdscr, TRUE); nodelay(stdscr, TRUE); curs_set(0);
   initViewerColors();
 
+  // Start broadcast receiver thread
+  std::thread bcastThread(broadcastReceiver, host, port);
+  bcastThread.detach();
+
   std::vector<std::string> outputLines;
   std::string lastCmd;
   bool cmdMode = false;
   std::string cmd;
+
+  // Command history
+  std::vector<std::string> cmdHistory;
+  int histIdx = -1; // -1 means not browsing history
 
   outputLines = {
     "viewer_cli — Monitor Query Client",
     "",
     "Commands:",
     "  /hosts              - List all hosts with current status",
-    "  /history <host> [n] - Metric history for a host (default n=30)",
-    "  /log [n]            - Recent event log (default n=50)",
+    "  /history <host> [n] - Metric history for last n mins (default 30)",
+    "  /log [n]            - Event log for last n mins (default 50)",
     "  /help               - Show this help",
     "  /clear              - Clear output",
     "",
     "Press '/' to enter a command, Esc to cancel, q to quit.",
+    "Up/Down arrows recall command history.",
+    "",
+    "Live dashboard from server broadcast shown at bottom.",
   };
 
   while (true) {
     int rows, cols;
-    getmaxyx(stdscr, rows, cols); 
+    getmaxyx(stdscr, rows, cols);
     erase();
 
+    // ── Header bar ──────────────────────────────────────────────────────────
     attron(COLOR_PAIR(7) | A_BOLD);
     char hdrBuf[256];
     snprintf(hdrBuf, sizeof(hdrBuf),
@@ -194,23 +296,71 @@ int main(int argc, char **argv) {
     int tsLen = 8; mvaddstr(0, cols - tsLen - 1, nowStr(time(nullptr)).c_str());
     attroff(COLOR_PAIR(7) | A_BOLD);
 
-    int maxLines = rows - 3;
+    // ── Determine layout: split screen ──────────────────────────────────────
+    // Dashboard gets bottom 1/3, command output gets top 2/3
+    // Reserve: 1 row header, 2 rows footer (status + cmd), 1 row separator
+    int usableRows = rows - 4; // header(1) + status(1) + cmdline(1) + separator(1)
+    int dashRows = 0;
+    std::vector<std::string> dashLines;
+    {
+      std::lock_guard<std::mutex> lk(g_bcastMtx);
+      dashLines = g_bcastLines;
+    }
+
+    if (!dashLines.empty()) {
+      dashRows = std::min((int)dashLines.size(), usableRows / 3);
+      if (dashRows < 3) dashRows = std::min(3, usableRows / 2);
+    }
+    int outputRows = usableRows - dashRows;
+    if (outputRows < 3) outputRows = 3;
+
+    // ── Top section: command output ─────────────────────────────────────────
     int startLine = 0;
-    if ((int)outputLines.size() > maxLines)
-      startLine = (int)outputLines.size() - maxLines;
-    for (int i = 0; i < maxLines && startLine + i < (int)outputLines.size(); i++) {
+    if ((int)outputLines.size() > outputRows)
+      startLine = (int)outputLines.size() - outputRows;
+    for (int i = 0; i < outputRows && startLine + i < (int)outputLines.size(); i++) {
       const std::string &ln = outputLines[startLine + i];
       mvaddnstr(1 + i, 0, ln.c_str(), cols - 1);
     }
 
+    // ── Dashboard separator + live broadcast ────────────────────────────────
+    if (dashRows > 0 && !dashLines.empty()) {
+      int sepRow = 1 + outputRows;
+      attron(COLOR_PAIR(8) | A_BOLD);
+      mvhline(sepRow, 0, ' ', cols);
+      std::string dashTitle = g_bcastConnected.load()
+        ? " ▼ LIVE DASHBOARD (broadcast) "
+        : " ▼ LIVE DASHBOARD (reconnecting...) ";
+      mvaddstr(sepRow, 1, dashTitle.c_str());
+      attroff(COLOR_PAIR(8) | A_BOLD);
+
+      int dashStart = sepRow + 1;
+      // Show the last dashRows lines of the broadcast
+      int bcastStart = 0;
+      if ((int)dashLines.size() > dashRows)
+        bcastStart = (int)dashLines.size() - dashRows;
+      for (int i = 0; i < dashRows && bcastStart + i < (int)dashLines.size(); i++) {
+        const std::string &dl = dashLines[bcastStart + i];
+        mvaddnstr(dashStart + i, 0, dl.c_str(), cols - 1);
+      }
+    }
+
+    // ── Status bar ──────────────────────────────────────────────────────────
     attron(COLOR_PAIR(5));
     mvhline(rows - 2, 0, ' ', cols);
     if (!lastCmd.empty()) {
       char sb[256]; snprintf(sb, sizeof(sb), " Last: /%s ", lastCmd.c_str());
       mvaddstr(rows - 2, 0, sb);
     }
+    // Show broadcast status on right side
+    {
+      std::string bstat = g_bcastConnected.load() ? "[LIVE]" : "[OFFLINE]";
+      int blen = (int)bstat.size();
+      mvaddstr(rows - 2, cols - blen - 1, bstat.c_str());
+    }
     attroff(COLOR_PAIR(5));
 
+    // ── Command line ────────────────────────────────────────────────────────
     attron(A_BOLD);
     mvhline(rows - 1, 0, ' ', cols);
     if (cmdMode) {
@@ -220,7 +370,7 @@ int main(int argc, char **argv) {
       attroff(COLOR_PAIR(5) | A_BOLD);
     } else {
       attron(COLOR_PAIR(1));
-      mvaddstr(rows - 1, 0, " [/] command  [q] quit");
+      mvaddstr(rows - 1, 0, " [/] command  [q] quit  [↑↓] history");
       attroff(COLOR_PAIR(1));
     }
     attroff(A_BOLD);
@@ -232,27 +382,65 @@ int main(int argc, char **argv) {
     if (ch == 'q' || ch == 'Q') break;
 
     if (!cmdMode) {
-      if (ch == '/') { cmdMode = true; cmd.clear(); }
+      if (ch == '/') { cmdMode = true; cmd.clear(); histIdx = -1; }
       continue;
     }
 
-    if (ch == 27) { cmdMode = false; cmd.clear(); continue; }
+    if (ch == 27) { cmdMode = false; cmd.clear(); histIdx = -1; continue; }
     if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
       if (!cmd.empty()) cmd.pop_back();
       continue;
     }
+
+    // Command history navigation
+    if (ch == KEY_UP) {
+      if (!cmdHistory.empty()) {
+        if (histIdx < 0) histIdx = (int)cmdHistory.size() - 1;
+        else if (histIdx > 0) histIdx--;
+        cmd = cmdHistory[histIdx];
+      }
+      continue;
+    }
+    if (ch == KEY_DOWN) {
+      if (!cmdHistory.empty() && histIdx >= 0) {
+        histIdx++;
+        if (histIdx >= (int)cmdHistory.size()) {
+          histIdx = -1;
+          cmd.clear();
+        } else {
+          cmd = cmdHistory[histIdx];
+        }
+      }
+      continue;
+    }
+
     if (ch != '\n' && ch != KEY_ENTER) {
       if (ch >= 32 && ch < 127) cmd.push_back((char)ch);
       continue;
     }
 
     std::string c = trim(cmd);
-    cmdMode = false; cmd.clear();
+    cmdMode = false; cmd.clear(); histIdx = -1;
     if (c.empty()) continue;
+
+    // Save to command history
+    cmdHistory.push_back(c);
 
     std::istringstream ss(c);
     std::string verb, arg1; int nArg = 30;
-    ss >> verb >> arg1 >> nArg;
+    ss >> verb;
+    if (verb == "log") {
+      std::string logArg;
+      if (ss >> logArg) {
+        try { nArg = std::stoi(logArg); } catch(...) { nArg = 50; }
+      } else { nArg = 50; }
+    } else {
+      ss >> arg1;
+      std::string nStr;
+      if (ss >> nStr) {
+        try { nArg = std::stoi(nStr); } catch(...) { nArg = 30; }
+      }
+    }
     lastCmd = c;
 
     if (verb == "clear") { outputLines.clear(); continue; }
@@ -260,9 +448,11 @@ int main(int argc, char **argv) {
       outputLines = {
         "Commands:",
         "  /hosts              - All hosts with status, CPU/RAM/DISK/LOAD",
-        "  /history <host> [n] - Last n metric samples for a host",
-        "  /log [n]            - Last n log events",
+        "  /history <host> [n] - Last n minutes metric samples for a host",
+        "  /log [n]            - Last n minutes log events",
         "  /clear              - Clear output",
+        "",
+        "Use Up/Down arrows to browse command history.",
       };
       continue;
     }
@@ -313,7 +503,8 @@ int main(int argc, char **argv) {
       }
     } else if (verb == "history") {
       char hdr[128];
-      snprintf(hdr, sizeof(hdr), "Host: %s  (%d samples)", arg1.c_str(), (int)objs.size());
+      snprintf(hdr, sizeof(hdr), "Host: %s  (%d samples, last %d min)",
+               arg1.c_str(), (int)objs.size(), nArg);
       outputLines.push_back(hdr);
       snprintf(hdr, sizeof(hdr), "%-10s %6s %6s %6s %7s  %8s %8s",
                "TIME","CPU%","RAM%","DISK%","LOAD","RX KB/s","TX KB/s");
@@ -332,7 +523,8 @@ int main(int argc, char **argv) {
       }
     } else if (verb == "log") {
       char hdr[128];
-      snprintf(hdr, sizeof(hdr), "Event Log (%d entries)", (int)objs.size());
+      snprintf(hdr, sizeof(hdr), "Event Log (last %d min, %d entries)",
+               nArg, (int)objs.size());
       outputLines.push_back(hdr);
       outputLines.push_back(std::string(cols-1, '-'));
       for (int i = (int)objs.size()-1; i >= 0; i--) {
@@ -351,6 +543,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  g_running = false;
   endwin();
   return 0;
 }

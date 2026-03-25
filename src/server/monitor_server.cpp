@@ -43,6 +43,9 @@ static std::mutex                          g_fdMtx;
 static std::unordered_map<int,std::string> g_fdHost;
 static std::unordered_map<int,std::string> g_fdIP;
 
+static std::mutex g_viewerPushMtx;
+static std::vector<int> g_viewerPushFds;
+
 static std::mutex              g_threadMtx;
 static std::vector<std::thread> g_threads;
 
@@ -53,6 +56,8 @@ struct ServerConfig {
   int  backupIntervalSec  = 10;
   int  staleSec           = DEFAULT_STALE_SEC;
   int  offlineSec         = DEFAULT_OFFLINE_SEC;
+  int  maxHistorySamples  = DEFAULT_MAX_HISTORY;
+  int  maxLogEntries      = DEFAULT_MAX_LOG_ENTRIES;
   std::string stateFile   = "data/monitor_state.db";
   std::string authToken;
   std::string alertWebhookUrl;
@@ -86,6 +91,8 @@ static ServerConfig loadServerConfig(const std::string &path) {
       else if (k == "BACKUP_INTERVAL_SEC")  cfg.backupIntervalSec = std::max(1, std::stoi(v));
       else if (k == "STALE_SEC")            cfg.staleSec          = std::max(5, std::stoi(v));
       else if (k == "OFFLINE_SEC")          cfg.offlineSec        = std::max(10, std::stoi(v));
+      else if (k == "MAX_HISTORY_SAMPLES")  cfg.maxHistorySamples = std::max(1, std::stoi(v));
+      else if (k == "MAX_LOG_ENTRIES")      cfg.maxLogEntries     = std::max(1, std::stoi(v));
       else if (k == "STATE_FILE")           cfg.stateFile         = v;
       else if (k == "AUTH_TOKEN")           cfg.authToken         = v;
       else if (k == "ALERT_WEBHOOK_URL")    cfg.alertWebhookUrl   = v;
@@ -235,6 +242,7 @@ static void staleCheckerLoop() {
 
 static void renderLoop(ui::Dashboard &dash) {
   auto lastData = std::chrono::steady_clock::now();
+  auto lastFrame = std::chrono::steady_clock::now();
   std::vector<HostState> hosts;
   std::vector<LogEvent>  log;
   while (g_running) {
@@ -245,6 +253,33 @@ static void renderLoop(ui::Dashboard &dash) {
       lastData = now;
     }
     dash.render(hosts, log, g_thresh);
+    
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastFrame).count() >= 2000) {
+      std::vector<int> fds;
+      {
+        std::lock_guard<std::mutex> lk(g_viewerPushMtx);
+        fds = g_viewerPushFds;
+      }
+      if (!fds.empty()) {
+        std::string frame = viewer::renderFrame(hosts, g_thresh);
+        std::vector<int> deadFds;
+        for (int pushFd : fds) {
+          if (write(pushFd, frame.c_str(), frame.size()) <= 0) {
+            deadFds.push_back(pushFd);
+          }
+        }
+        if (!deadFds.empty()) {
+          std::lock_guard<std::mutex> lk(g_viewerPushMtx);
+          for (int dfd : deadFds) {
+            auto it = std::find(g_viewerPushFds.begin(), g_viewerPushFds.end(), dfd);
+            if (it != g_viewerPushFds.end()) g_viewerPushFds.erase(it);
+            close(dfd);
+          }
+        }
+      }
+      lastFrame = now;
+    }
+    
     if (!g_running) break;
   }
 }
@@ -288,15 +323,21 @@ static void viewerHandler(int fd) {
     }
   }
 
-  // Legacy push mode: stream ANSI frames every 2s
+  // Legacy push mode: subscribe to broadcast
+  {
+    std::lock_guard<std::mutex> lk(g_viewerPushMtx);
+    g_viewerPushFds.push_back(fd);
+  }
+
   tv.tv_sec = 0; tv.tv_usec = 0;
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  while (g_running) {
-    auto hosts = g_store.snapshot();
-    std::string frame = viewer::renderFrame(hosts, g_thresh);
-    if (write(fd, frame.c_str(), frame.size()) <= 0) break;
-    for (int i = 0; i < 20 && g_running; i++)
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  char dummy;
+  while (g_running && recv(fd, &dummy, 1, 0) > 0) {}
+
+  {
+    std::lock_guard<std::mutex> lk(g_viewerPushMtx);
+    auto it = std::find(g_viewerPushFds.begin(), g_viewerPushFds.end(), fd);
+    if (it != g_viewerPushFds.end()) g_viewerPushFds.erase(it);
   }
   close(fd);
 }
@@ -381,6 +422,8 @@ int main(int argc, char **argv) {
   g_thresh = loadThresholds(cfgPath);
   g_cfg    = loadServerConfig(serverCfgPath);
   g_stats.reset();
+
+  g_store.setMaxEntries(g_cfg.maxHistorySamples, g_cfg.maxLogEntries);
 
   if (!validateStatePath(g_cfg.stateFile)) {
     std::cerr << "[ERROR] STATE_FILE path outside working dir: " << g_cfg.stateFile << "\n";

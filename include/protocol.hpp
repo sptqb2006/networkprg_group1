@@ -9,8 +9,8 @@ namespace monitor {
 static constexpr uint16_t DEFAULT_PORT = 8784;
 static constexpr uint16_t DEFAULT_VPORT = 8785;
 static constexpr int RECONNECT_INTERVAL_SEC = 5;
-static constexpr int MAX_HISTORY = 60;
-static constexpr int MAX_LOG_ENTRIES = 500;
+static constexpr int DEFAULT_MAX_HISTORY = 60;
+static constexpr int DEFAULT_MAX_LOG_ENTRIES = 500;
 static constexpr int RECV_TIMEOUT_SEC = 30;
 static constexpr int DEFAULT_STALE_SEC   = 30;
 static constexpr int DEFAULT_OFFLINE_SEC = 90;
