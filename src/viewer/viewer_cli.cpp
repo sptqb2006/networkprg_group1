@@ -574,7 +574,7 @@ done:
     wattron(hdrWin, A_BOLD);
     {
       char hb[256];
-      snprintf(hb, sizeof(hb), " [*] MONITOR VIEWER  server=%s:%d  group1_H@ckErUSTH",
+      snprintf(hb, sizeof(hb), " [*] MONITOR VIEWER  server=%s:%d  group2_H@ckErUSTH",
                host.c_str(), port);
       wDrawLine(hdrWin, 0, 0, hb, cols);
       std::string ts = nowStr(time(nullptr));

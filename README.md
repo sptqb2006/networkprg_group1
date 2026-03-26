@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>🚀 Distributed System Monitor</h1>
+  <h1>Distributed System Monitor</h1>
   <p><b>A high-performance, real-time distributed telemetry and alerting system built in C++.</b></p>
   <p>
     <i>Designed for scale, built for speed, tailored for absolute observability.</i>
@@ -34,7 +34,7 @@ Rather than relying on resource-heavy web dashboards, this project embraces the 
 
 ---
 
-## 🔥 Enterprise-Grade Features
+## 🔥  Features
 
 *   ⚡ **Ultra-Lightweight Agents:** Written in pure C++ polling `/proc`. Near-zero CPU overhead. Auto-reconnects seamlessly if the network drops.
 *   📡 **Event-Driven Alert Broadcast:** Detection is instant. When a host breaches its threshold, the server immediately pushes an `ALERT_EVT` frame to all connected viewers without polling delays.
@@ -48,10 +48,13 @@ Rather than relying on resource-heavy web dashboards, this project embraces the 
 
 ---
 
-## 🛠 Getting Started
+## 🛠 Setup
 
 ### 1. Build the System
-Only requires a modern C++ compiler (`g++` / `clang++`), `make`, and `ncurses-dev`.
+**Build Requirements:**
+- `g++` (version 10 or later)
+- `cmake` (version 3.16 or later)
+- `libncurses-dev`
 ```bash
 ./build.sh
 ```
@@ -78,13 +81,13 @@ Start the central nervous system:
 Deploy agents on your target machines (or locally for testing):
 ```bash
 # Agent 1 will push metrics every 2 seconds
-./agent -server 127.0.0.1:8784 -interval 2 -name backend-api-01
+./agent -server <YOUR_SERVER_IP>:8784 -interval 2 -name <YOUR_DEVICE_NAME>
 ```
 
 ### 4. Connect the Admin Viewer
 Gain absolute visibility into your cluster:
 ```bash
-./viewer_cli -server 127.0.0.1:8785
+./viewer_cli -server <YOUR_SERVER_IP>:8785
 ```
 
 ---

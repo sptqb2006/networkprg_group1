@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1\" && g++ -std=c++17 -fsyntax-only -Wall -Wextra -I include include/metrics_collector.hpp 2>&1)",
+      "Bash(cd \"/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1\" && echo '#include \"metrics_collector.hpp\"' | g++ -std=c++20 -Wall -Wextra -pthread -Iinclude -DHAVE_NCURSESW -fsyntax-only -x c++ - 2>&1)",
+      "Bash(cd \"/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1\" && bash build.sh 2>&1)",
+      "Bash(cd \"/media/dell/SEAGATE/CODE_PROJECT/Network Programming/temp/networkprg_group1\" && ./agent --help 2>&1)"
+    ]
+  }
+}

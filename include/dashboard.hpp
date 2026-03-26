@@ -361,7 +361,7 @@ private:
     mvaddstr(y,2,hint.c_str());
     attroff(COLOR_PAIR(C_CYAN)|A_BOLD);
     // Credit — bottom right, centered with hints
-    const char *credit="Developed by group1_H@ckErUSTH";
+    const char *credit="Developed by group2_H@ckErUSTH";
     int crx=cols_-(int)strlen(credit)-3;
     if(crx>(int)hint.size()+4) {
       attron(COLOR_PAIR(C_CYAN)|A_BOLD);
