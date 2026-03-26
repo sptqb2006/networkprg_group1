@@ -287,32 +287,35 @@ int main(int argc, char **argv) {
   int prevRows = 0, prevCols = 0;
 
   // Sub-windows (created/resized dynamically)
-  WINDOW *hdrWin   = nullptr; // header bar
-  WINDOW *cmdWin   = nullptr; // command output
-  WINDOW *sepWin   = nullptr; // separator
-  WINDOW *alertWin = nullptr; // alert panel
-  WINDOW *statWin  = nullptr; // status bar
-  WINDOW *inputWin = nullptr; // command input
+  WINDOW *hdrWin   = nullptr; // header bar (full width)
+  WINDOW *cmdWin   = nullptr; // command output (left)
+  WINDOW *sepWin   = nullptr; // vertical separator (1 col)
+  WINDOW *alertWin = nullptr; // alert panel (right)
+  WINDOW *statWin  = nullptr; // status bar (full width)
+  WINDOW *inputWin = nullptr; // command input (full width)
+
+  // Panel widths (set during resize)
+  int leftW = 0, rightW = 0, panelH = 0;
 
   outputLines = {
     "viewer_cli -- Monitor Query Client",
     "",
     "Commands:",
-    "  /hosts              - List all hosts with current status",
-    "  /history <host> [n] - Metric history for last n mins (default 30)",
-    "  /log [n]            - Event log for last n mins (default 50)",
+    "  /hosts              - List all hosts",
+    "  /history <host> [n] - Last n mins (def 30)",
+    "  /log [n]            - Log last n mins (def 50)",
     "  /help               - Show this help",
-    "  /clear              - Clear output / clear alerts",
+    "  /clear              - Clear output / alerts",
     "",
-    "Press '/' to enter a command, Esc to cancel, q to quit.",
-    "[Up/Down] Scroll command output   [PgUp/Dn] Scroll alerts",
+    "Press '/' to enter command, Esc cancel, q quit.",
+    "[Up/Dn] Scroll output  [PgUp/Dn] Scroll alerts",
   };
 
   while (true) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    // -- Detect resize => recreate windows-- 
+    // -- Detect resize => recreate windows--
     if (rows != prevRows || cols != prevCols) {
       prevRows = rows; prevCols = cols;
       g_needsRedraw = true;
@@ -325,33 +328,38 @@ int main(int argc, char **argv) {
       if (statWin)  delwin(statWin);
       if (inputWin) delwin(inputWin);
 
-      // Layout:
-      //   Row 0:            hdrWin   (1 row)
-      //   Row 1..sepR-1:    cmdWin   (command output)
-      //   Row sepR:         sepWin   (1 row, alert header)
-      //   Row sepR+1..R-3:  alertWin (alert panel)
-      //   Row R-2:          statWin  (1 row)
-      //   Row R-1:          inputWin (1 row)
-      int usable = rows - 4; // hdr + sep + stat + input
-      int alertH = std::max(4, usable / 3);
-      int cmdH   = usable - alertH;
-      if (cmdH < 3) { cmdH = 3; alertH = usable - cmdH; }
-      int sepR = 1 + cmdH;
+      // Vertical split layout:
+      //   Row 0:           hdrWin   (full width, 1 row)
+      //   Row 1..R-3:      cmdWin (left) | sepWin (1 col) | alertWin (right)
+      //   Row R-2:         statWin  (full width, 1 row)
+      //   Row R-1:         inputWin (full width, 1 row)
+      panelH = rows - 3; // header + status + input
+      if (panelH < 3) panelH = 3;
+
+      // Left panel: ~60% width, right panel: ~40% width, 1 col separator
+      leftW  = (cols - 1) * 3 / 5;  // 60%
+      if (leftW < 20) leftW = 20;
+      rightW = cols - leftW - 1;    // remaining after separator
+      if (rightW < 15) rightW = 15;
+      // Ensure total fits
+      if (leftW + 1 + rightW > cols) {
+        leftW = cols / 2;
+        rightW = cols - leftW - 1;
+      }
 
       hdrWin   = newwin(1, cols, 0, 0);
-      cmdWin   = newwin(cmdH, cols, 1, 0);
-      sepWin   = newwin(1, cols, sepR, 0);
-      alertWin = newwin(alertH, cols, sepR + 1, 0);
+      cmdWin   = newwin(panelH, leftW, 1, 0);
+      sepWin   = newwin(panelH, 1, 1, leftW);
+      alertWin = newwin(panelH, rightW, 1, leftW + 1);
       statWin  = newwin(1, cols, rows - 2, 0);
       inputWin = newwin(1, cols, rows - 1, 0);
 
-      // Enable keypad on stdscr (already done), and set colors
       for (auto *w : {hdrWin, cmdWin, sepWin, alertWin, statWin, inputWin})
         keypad(w, TRUE);
     }
 
-    // -- Input handling (timeout-based, non-blocking)-- 
-    timeout(50); // 50ms wait, returns ERR if no key
+    // -- Input handling (timeout-based, non-blocking)--
+    timeout(50);
     int ch = getch();
 
     if (ch != ERR)
@@ -360,12 +368,12 @@ int main(int argc, char **argv) {
     if (ch == 'q' || ch == 'Q') break;
 
     if (!cmdMode) {
-      // -- Normal mode key handling-- 
+      // -- Normal mode key handling--
       if (ch == '/') {
         cmdMode = true; cmd.clear(); histIdx = -1;
       } else if (ch == KEY_UP) {
         cmdScroll++;
-        int maxScr = std::max(0, (int)outputLines.size() - getmaxy(cmdWin));
+        int maxScr = std::max(0, (int)outputLines.size() - panelH);
         if (cmdScroll > maxScr) cmdScroll = maxScr;
       } else if (ch == KEY_DOWN) {
         cmdScroll--;
@@ -373,27 +381,25 @@ int main(int argc, char **argv) {
       } else if (ch == KEY_PPAGE) {
         alertScroll += 3;
         std::lock_guard<std::mutex> lk(g_alertMtx);
-        int maxScr = std::max(0, (int)g_alertLines.size() - getmaxy(alertWin));
+        int maxScr = std::max(0, (int)g_alertLines.size() - panelH);
         if (alertScroll > maxScr) alertScroll = maxScr;
       } else if (ch == KEY_NPAGE) {
         alertScroll -= 3;
         if (alertScroll < 0) alertScroll = 0;
       }
     } else {
-      // -- Command mode key handling-- 
+      // -- Command mode key handling--
       if (ch == 27) {
         cmdMode = false; cmd.clear(); histIdx = -1;
       } else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
         if (!cmd.empty()) cmd.pop_back();
       } else if (ch == KEY_UP) {
-        // Command history up
         if (!cmdHistory.empty()) {
           if (histIdx < 0) histIdx = (int)cmdHistory.size() - 1;
           else if (histIdx > 0) histIdx--;
           cmd = cmdHistory[histIdx];
         }
       } else if (ch == KEY_DOWN) {
-        // Command history down
         if (!cmdHistory.empty() && histIdx >= 0) {
           histIdx++;
           if (histIdx >= (int)cmdHistory.size()) {
@@ -403,7 +409,7 @@ int main(int argc, char **argv) {
           }
         }
       } else if (ch == '\n' || ch == KEY_ENTER) {
-        // -- Execute command-- 
+        // -- Execute command--
         std::string c = trim(cmd);
         cmdMode = false; cmd.clear(); histIdx = -1;
 
@@ -435,23 +441,23 @@ int main(int argc, char **argv) {
           } else if (verb == "help") {
             outputLines = {
               "Commands:",
-              "  /hosts              - All hosts with status, CPU/RAM/DISK/LOAD",
-              "  /history <host> [n] - Last n minutes metric samples",
-              "  /log [n]            - Last n minutes log events",
-              "  /clear              - Clear output & alerts",
+              "  /hosts           - All hosts",
+              "  /history <h> [n] - Last n min",
+              "  /log [n]         - Log n min",
+              "  /clear           - Clear all",
               "",
-              "Normal mode:  Up/Down scroll output  PgUp/Dn scroll alerts",
-              "Command mode: Up/Down browse history",
+              "Normal:  Up/Dn scroll output",
+              "         PgUp/Dn scroll alerts",
+              "Cmd:     Up/Dn browse history",
             };
           } else {
             outputLines.clear();
-            outputLines.push_back("Querying server " + host + ":" + std::to_string(port) + "...");
+            outputLines.push_back("Querying...");
             g_needsRedraw = true;
 
-            // Force immediate UI update before blocking query
             if (cmdWin) {
               werase(cmdWin);
-              wDrawLine(cmdWin, 0, 0, outputLines[0], cols);
+              wDrawLine(cmdWin, 0, 0, outputLines[0], leftW);
               wnoutrefresh(cmdWin);
               doupdate();
             }
@@ -465,7 +471,7 @@ int main(int argc, char **argv) {
             } else if (verb == "log") {
               resp = queryServer(host, port, "log " + std::to_string(nArg));
             } else {
-              outputLines = {"Unknown command: /" + verb, "Try /help"};
+              outputLines = {"Unknown: /" + verb, "Try /help"};
               goto done;
             }
 
@@ -475,61 +481,59 @@ int main(int argc, char **argv) {
 
             {
               auto objs = splitJsonObjects(resp);
-              if (objs.empty()) { outputLines = {"(empty response)"}; goto done; }
+              if (objs.empty()) { outputLines = {"(empty)"}; goto done; }
 
               if (verb == "hosts") {
                 char hdr[128];
-                snprintf(hdr, sizeof(hdr), "%-16s %-8s %6s %6s %6s %6s  %-12s",
-                         "HOST","STATUS","CPU%","RAM%","DISK%","LOAD","LAST SEEN");
+                snprintf(hdr, sizeof(hdr), "%-14s %-6s %5s %5s %5s %s",
+                         "HOST","STATUS","CPU%","RAM%","DSK%","SEEN");
                 outputLines.push_back(hdr);
-                outputLines.push_back(std::string(cols-1, '-'));
+                outputLines.push_back(std::string(leftW - 1, '-'));
                 for (auto &obj : objs) {
                   std::string st = jstr(obj, "status");
                   int co = statusColor(st);
                   std::string ts = fmtTs(jnum(obj, "lastSeen"));
                   char row[256];
-                  snprintf(row, sizeof(row), "%-16s %-8s %5s%% %5s%% %5s%% %6s  %s",
-                           jstr(obj,"host").substr(0,16).c_str(),
-                           st.substr(0,8).c_str(),
+                  snprintf(row, sizeof(row), "%-14s %-6s %4s%% %4s%% %4s%% %s",
+                           jstr(obj,"host").substr(0,14).c_str(),
+                           st.substr(0,6).c_str(),
                            jnum(obj,"cpu").c_str(), jnum(obj,"ram").c_str(),
-                           jnum(obj,"disk").c_str(), jnum(obj,"load").c_str(),
+                           jnum(obj,"disk").c_str(),
                            ts.c_str());
-                  std::string marker = (co==3?"[!] ":co==4?"[~] ":co==6?"[?] ":"[.] ");
-                  outputLines.push_back(marker + row);
+                  std::string marker = (co==3?"[!]":co==4?"[~]":co==6?"[?]":"[.]");
+                  outputLines.push_back(marker + " " + row);
                 }
               } else if (verb == "history") {
                 char hdr[128];
-                snprintf(hdr, sizeof(hdr), "Host: %s  (%d samples, last %d min)",
+                snprintf(hdr, sizeof(hdr), "%s (%d samp, %d min)",
                          arg1.c_str(), (int)objs.size(), nArg);
                 outputLines.push_back(hdr);
-                snprintf(hdr, sizeof(hdr), "%-10s %6s %6s %6s %7s  %8s %8s",
-                         "TIME","CPU%","RAM%","DISK%","LOAD","RX KB/s","TX KB/s");
+                snprintf(hdr, sizeof(hdr), "%-8s %5s %5s %5s %6s",
+                         "TIME","CPU%","RAM%","DSK%","LOAD");
                 outputLines.push_back(hdr);
-                outputLines.push_back(std::string(cols-1, '-'));
+                outputLines.push_back(std::string(leftW - 1, '-'));
                 for (int i = (int)objs.size()-1; i >= 0; i--) {
                   auto &obj = objs[i];
                   char row[256];
-                  snprintf(row, sizeof(row), "%-10s %5s%% %5s%% %5s%% %7s  %8s %8s",
+                  snprintf(row, sizeof(row), "%-8s %4s%% %4s%% %4s%% %6s",
                            fmtTs(jnum(obj,"ts")).c_str(),
                            jnum(obj,"cpu").c_str(), jnum(obj,"ram").c_str(),
-                           jnum(obj,"disk").c_str(), jnum(obj,"load").c_str(),
-                           jnum(obj,"rx").c_str(), jnum(obj,"tx").c_str());
+                           jnum(obj,"disk").c_str(), jnum(obj,"load").c_str());
                   outputLines.push_back(row);
                   if ((int)outputLines.size() > 500) break;
                 }
               } else if (verb == "log") {
                 char hdr[128];
-                snprintf(hdr, sizeof(hdr), "Event Log (last %d min, %d entries)",
+                snprintf(hdr, sizeof(hdr), "Log (last %d min, %d entries)",
                          nArg, (int)objs.size());
                 outputLines.push_back(hdr);
-                outputLines.push_back(std::string(cols-1, '-'));
+                outputLines.push_back(std::string(leftW - 1, '-'));
                 for (int i = (int)objs.size()-1; i >= 0; i--) {
                   auto &obj = objs[i];
                   char row[256];
-                  snprintf(row, sizeof(row), "%-10s %-12s %-12s %-10s  %s",
+                  snprintf(row, sizeof(row), "%-8s %-10s %-8s %s",
                            fmtTs(jnum(obj,"ts")).c_str(),
-                           jstr(obj,"host").substr(0,12).c_str(),
-                           jstr(obj,"ip").substr(0,12).c_str(),
+                           jstr(obj,"host").substr(0,10).c_str(),
                            jstr(obj,"type").c_str(),
                            jstr(obj,"detail").c_str());
                   outputLines.push_back(row);
@@ -539,7 +543,7 @@ int main(int argc, char **argv) {
             }
           }
 done:
-          cmdScroll = 0; // reset scroll on new command
+          cmdScroll = 0;
           g_needsRedraw = true;
         }
       } else if (ch >= 32 && ch < 127) {
@@ -547,7 +551,7 @@ done:
       }
     }
 
-    // -- Periodic redraw (time-based, for clock update)-- 
+    // -- Periodic redraw (clock update every 1s)--
     {
       static auto lastClock = std::chrono::steady_clock::now();
       auto now = std::chrono::steady_clock::now();
@@ -557,17 +561,14 @@ done:
       }
     }
 
-    // -- Only redraw when needed-- 
+    // -- Only redraw when needed--
     if (!g_needsRedraw.exchange(false))
       continue;
 
     if (!hdrWin || !cmdWin || !sepWin || !alertWin || !statWin || !inputWin)
       continue;
 
-    int cmdH   = getmaxy(cmdWin);
-    int alertH = getmaxy(alertWin);
-
-    // -- Draw header bar-- 
+    // -- Draw header bar (full width)--
     werase(hdrWin);
     wbkgd(hdrWin, COLOR_PAIR(CP_HEADER));
     wattron(hdrWin, A_BOLD);
@@ -582,79 +583,88 @@ done:
     wattroff(hdrWin, A_BOLD);
     wnoutrefresh(hdrWin);
 
-    // -- Draw command output panel-- 
+    // -- Draw left panel: command output--
     werase(cmdWin);
     {
+      // Panel title
+      wattron(cmdWin, COLOR_PAIR(CP_CYAN) | A_BOLD);
+      wDrawLine(cmdWin, 0, 1, "COMMAND OUTPUT", leftW);
+      wattroff(cmdWin, COLOR_PAIR(CP_CYAN) | A_BOLD);
+      wattron(cmdWin, COLOR_PAIR(CP_CYAN));
+      for (int x = 0; x < leftW; x++) mvwaddch(cmdWin, 1, x, '-');
+      wattroff(cmdWin, COLOR_PAIR(CP_CYAN));
+
+      int dispH = panelH - 2; // subtract title + separator line
       int total = (int)outputLines.size();
-      int firstIdx = total - cmdH - cmdScroll;
+      int firstIdx = total - dispH - cmdScroll;
       if (firstIdx < 0) firstIdx = 0;
-      for (int i = 0; i < cmdH; i++) {
+      for (int i = 0; i < dispH; i++) {
         int idx = firstIdx + i;
         if (idx >= total) break;
-        wDrawLine(cmdWin, i, 0, outputLines[idx], cols);
+        wDrawLine(cmdWin, 2 + i, 0, outputLines[idx], leftW);
       }
-      // Scroll indicator
       if (cmdScroll > 0) {
         wattron(cmdWin, COLOR_PAIR(CP_CYAN) | A_DIM);
         char si[32];
         snprintf(si, sizeof(si), " [^%d more] ", cmdScroll);
-        mvwaddstr(cmdWin, cmdH - 1, cols - (int)strlen(si) - 1, si);
+        mvwaddstr(cmdWin, panelH - 1, leftW - (int)strlen(si) - 1, si);
         wattroff(cmdWin, COLOR_PAIR(CP_CYAN) | A_DIM);
       }
     }
     wnoutrefresh(cmdWin);
 
-    // -- Draw separator-- 
+    // -- Draw vertical separator (1 col)--
     werase(sepWin);
-    wbkgd(sepWin, COLOR_PAIR(CP_ALERT_HDR));
-    wattron(sepWin, A_BOLD);
-    {
-      int cnt = g_alertCount.load();
-      char sb[128];
-      snprintf(sb, sizeof(sb), " >> LIVE ALERTS (%d total) ", cnt);
-      wDrawLine(sepWin, 0, 0, sb, cols);
-      const char *colHdr = "TIME    HOST            DETAIL";
-      int hLen = (int)strlen(colHdr);
-      if (cols - hLen - 2 > 30)
-        mvwaddstr(sepWin, 0, cols - hLen - 1, colHdr);
-    }
-    wattroff(sepWin, A_BOLD);
+    wattron(sepWin, COLOR_PAIR(CP_SEP));
+    for (int y = 0; y < panelH; y++)
+      mvwaddch(sepWin, y, 0, ACS_VLINE);
+    wattroff(sepWin, COLOR_PAIR(CP_SEP));
     wnoutrefresh(sepWin);
 
-    // -- Draw alert panel-- 
+    // -- Draw right panel: live alerts--
     werase(alertWin);
     {
+      // Panel title
+      int cnt = g_alertCount.load();
+      char titleBuf[128];
+      snprintf(titleBuf, sizeof(titleBuf), "LIVE ALERTS (%d)", cnt);
+      wattron(alertWin, COLOR_PAIR(CP_ALERT_HDR) | A_BOLD);
+      wDrawLine(alertWin, 0, 1, titleBuf, rightW);
+      wattroff(alertWin, COLOR_PAIR(CP_ALERT_HDR) | A_BOLD);
+      wattron(alertWin, COLOR_PAIR(CP_RED));
+      for (int x = 0; x < rightW; x++) mvwaddch(alertWin, 1, x, '-');
+      wattroff(alertWin, COLOR_PAIR(CP_RED));
+
+      int dispH = panelH - 2;
       std::lock_guard<std::mutex> lk(g_alertMtx);
       int total = (int)g_alertLines.size();
       if (total == 0) {
         wattron(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
-        wDrawLine(alertWin, 0, 2, "(no alerts yet -- waiting for broadcast...)", cols);
+        wDrawLine(alertWin, 2, 1, "(waiting for alerts...)", rightW);
         wattroff(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
       } else {
-        int firstIdx = total - alertH - alertScroll;
+        int firstIdx = total - dispH - alertScroll;
         if (firstIdx < 0) firstIdx = 0;
-        for (int i = 0; i < alertH; i++) {
+        for (int i = 0; i < dispH; i++) {
           int idx = firstIdx + i;
           if (idx >= total) break;
-          wattron(alertWin, COLOR_PAIR(CP_RED));
-          mvwaddstr(alertWin, i, 0, "  !");
-          wattroff(alertWin, COLOR_PAIR(CP_RED));
           wattron(alertWin, COLOR_PAIR(CP_RED) | A_BOLD);
-          waddnstr(alertWin, g_alertLines[idx].c_str(), cols - 4);
+          mvwaddstr(alertWin, 2 + i, 0, " !");
+          waddnstr(alertWin, g_alertLines[idx].c_str(), rightW - 3);
           wattroff(alertWin, COLOR_PAIR(CP_RED) | A_BOLD);
         }
         if (alertScroll > 0) {
           wattron(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
           char si[32];
           snprintf(si, sizeof(si), " [v%d more] ", alertScroll);
-          mvwaddstr(alertWin, alertH - 1, cols - (int)strlen(si) - 1, si);
+          mvwaddstr(alertWin, panelH - 1, rightW - (int)strlen(si) - 1, si);
           wattroff(alertWin, COLOR_PAIR(CP_CYAN) | A_DIM);
         }
       }
     }
     wnoutrefresh(alertWin);
 
-    // -- Draw status bar-- 
+    // -- Draw status bar (full width)--
     werase(statWin);
     wbkgd(statWin, COLOR_PAIR(CP_CYAN));
     wattron(statWin, COLOR_PAIR(CP_CYAN));
@@ -669,7 +679,7 @@ done:
     wattroff(statWin, COLOR_PAIR(CP_CYAN));
     wnoutrefresh(statWin);
 
-    // -- Draw command input line-- 
+    // -- Draw command input line (full width)--
     werase(inputWin);
     wattron(inputWin, A_BOLD);
     if (cmdMode) {
@@ -679,18 +689,17 @@ done:
     } else {
       wattron(inputWin, COLOR_PAIR(CP_DEFAULT));
       wDrawLine(inputWin, 0, 0,
-        " [/] command  [q] quit  [Up/Dn] scroll output  [PgUp/Dn] scroll alerts", cols);
+        " [/] cmd  [q] quit  [Up/Dn] scroll output  [PgUp/Dn] scroll alerts", cols);
       wattroff(inputWin, COLOR_PAIR(CP_DEFAULT));
     }
     wattroff(inputWin, A_BOLD);
     wnoutrefresh(inputWin);
 
-    // -- Single screen update-- 
+    // -- Single screen update--
     doupdate();
   }
 
   g_running = false;
-  // Clean up windows
   if (hdrWin)   delwin(hdrWin);
   if (cmdWin)   delwin(cmdWin);
   if (sepWin)   delwin(sepWin);
