@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Distributed System Monitor</h1>
+  <h1>Distributed System Monitor by group2_H@ckErUSTH</h1>
   <p><b>A high-performance, real-time distributed telemetry and alerting system built in C++.</b></p>
   <p>
     <i>Designed for scale, built for speed, tailored for absolute observability.</i>
