@@ -44,6 +44,7 @@ Rather than relying on resource-heavy web dashboards, this project embraces the 
 *   ⏱ **Smart State Machine:** Nodes transition smoothly: `ONLINE` ➔ `STALE` (high-latency/delayed packets) ➔ `OFFLINE` (dead).
 *   🎯 **Granular Threshold Configuration:** Global limits (e.g., CPU=80%) with per-host overrides (e.g., `web-1.cpu=85`, `db.ram=95`) instantly loaded without recompiling.
 *   🕒 **Time-Series Engine:** Queries operate on absolute time windows (e.g., "Give me the last 15 minutes of logs") instead of simple flat counts.
+*   💬 **Message Framing:** Resolves the stream problem of TCP through length-prefix.
 
 ---
 
@@ -116,5 +117,5 @@ This project is architected as the foundation for a massive-scale observability 
 
 ---
 <div align="center">
-  <i>Developed with ❤️ by group1_H@ckErUSTH</i>
+  <i>Developed with ❤️ by group2_H@ckErUSTH</i>
 </div>
