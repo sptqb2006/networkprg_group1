@@ -17,6 +17,9 @@
 
 using namespace monitor;
 
+// =============================================================================
+// [SECTION 1] GLOBAL STATE & SIGNAL HANDLING
+// =============================================================================
 static std::atomic<bool> g_running{true};
 static void sigHandler(int) { g_running = false; }
 
@@ -26,6 +29,9 @@ static void sleepSec(int sec) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
+// =============================================================================
+// [SECTION 2] CONFIGURATION
+// =============================================================================
 struct AgentConfig {
   std::string serverHost  = "127.0.0.1";
   uint16_t    serverPort  = DEFAULT_PORT;
@@ -58,7 +64,9 @@ static void loadConfigFile(AgentConfig &cfg, const std::string &path) {
   }
 }
 
-// TCP connect with DNS resolution
+// =============================================================================
+// [SECTION 3] NETWORKING -- TCP connect with DNS resolution
+// =============================================================================
 static int connectToServer(const std::string &host, uint16_t port) {
   addrinfo hints{}, *res = nullptr;
   hints.ai_family   = AF_INET;
@@ -81,6 +89,9 @@ static void parseServerArg(AgentConfig &cfg, const std::string &sv) {
   cfg.serverPort = (uint16_t)std::stoi(sv.substr(p + 1));
 }
 
+// =============================================================================
+// [SECTION 4] MAIN -- Entry point: parse args, connect loop, send metrics
+// =============================================================================
 int main(int argc, char **argv) {
   AgentConfig cfg;
   std::string configPath = "config/agent.conf";

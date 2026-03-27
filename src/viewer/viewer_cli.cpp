@@ -20,7 +20,9 @@
 #  include <curses.h>
 #endif
 
-// -- Utility-- 
+// =============================================================================
+// [SECTION 1] UTILITY FUNCTIONS -- String, Network, JSON helpers
+// =============================================================================
 static std::string trim(const std::string &s) {
   auto b = s.find_first_not_of(" \t\r\n");
   auto e = s.find_last_not_of(" \t\r\n");
@@ -121,7 +123,9 @@ static int statusColor(const std::string &st) {
   return 1;
 }
 
-// -- Color pairs-- 
+// =============================================================================
+// [SECTION 2] NCURSES COLORS -- Color pairs & initialization
+// =============================================================================
 enum ColorPairs {
   CP_DEFAULT = 1, CP_GREEN, CP_RED, CP_YELLOW, CP_CYAN, CP_MAGENTA,
   CP_HEADER,   // white on blue
@@ -153,7 +157,9 @@ static void initViewerColors() {
   }
 }
 
-// -- Global state for broadcast receiver-- 
+// =============================================================================
+// [SECTION 3] BROADCAST RECEIVER -- Background thread for ALERT_EVT
+// =============================================================================
 static std::mutex g_alertMtx;
 static std::vector<std::string> g_alertLines;
 static const int MAX_ALERT_LINES = 200;
@@ -238,7 +244,9 @@ static void broadcastReceiver(const std::string &host, uint16_t port) {
   }
 }
 
-// -- Safe window draw helpers-- 
+// =============================================================================
+// [SECTION 4] DRAW HELPERS -- Safe ncurses write utilities
+// =============================================================================
 static void wDrawLine(WINDOW *w, int y, int x, const std::string &s, int maxCols) {
   wmove(w, y, x);
   waddnstr(w, s.c_str(), maxCols - x);

@@ -33,6 +33,9 @@
 
 using namespace monitor;
 
+// =============================================================================
+// [SECTION 1] GLOBAL STATE -- Shared data across all threads
+// =============================================================================
 static MetricsStore        g_store;
 static Thresholds          g_thresh;
 static ServerStats         g_stats;
@@ -51,6 +54,9 @@ static std::vector<std::thread> g_threads;
 
 static Alerter *g_alerter = nullptr;
 
+// =============================================================================
+// [SECTION 2] CONFIGURATION -- ServerConfig struct & loader
+// =============================================================================
 struct ServerConfig {
   int  maxAgentsPerIP     = 2;
   int  backupIntervalSec  = 10;
@@ -70,6 +76,9 @@ struct ServerConfig {
 };
 static ServerConfig g_cfg;
 
+// =============================================================================
+// [SECTION 3] UTILITY FUNCTIONS
+// =============================================================================
 static std::string trim(const std::string &s) {
   auto b = s.find_first_not_of(" \t\r\n"), e = s.find_last_not_of(" \t\r\n");
   return (b == std::string::npos) ? "" : s.substr(b, e - b + 1);
@@ -130,6 +139,9 @@ static void joinAllThreads() {
   g_threads.clear();
 }
 
+// =============================================================================
+// [SECTION 4] CORE HANDLER -- Per-agent TCP handler (metrics + ALERT_EVT)
+// =============================================================================
 static void handleClient(int fd, std::string ip) {
   net::setRecvTimeout(fd, RECV_TIMEOUT_SEC);
   std::string hostName;
@@ -260,6 +272,9 @@ static void handleClient(int fd, std::string ip) {
   close(fd);
 }
 
+// =============================================================================
+// [SECTION 5] BACKGROUND LOOPS -- Persist, StaleCheck, Render/Broadcast
+// =============================================================================
 static void persistLoop() {
   while (g_running) {
     g_store.saveToFile(g_cfg.stateFile);
@@ -324,6 +339,9 @@ static void renderLoop(ui::Dashboard &dash) {
   }
 }
 
+// =============================================================================
+// [SECTION 6] VIEWER & ACCEPT LOOPS -- CMD queries, socket accept
+// =============================================================================
 static void viewerHandler(int fd) {
   g_stats.viewerConnects++;
   struct timeval tv{}; tv.tv_sec = 2;
@@ -441,6 +459,9 @@ static void viewerAcceptLoop(int vfd) {
 
 static void sigHandler(int) { g_running = false; }
 
+// =============================================================================
+// [SECTION 7] MAIN -- Entry point: parse args, load config, start all loops
+// =============================================================================
 int main(int argc, char **argv) {
   uint16_t port = DEFAULT_PORT, vport = DEFAULT_VPORT;
   std::string cfgPath = "config/thresholds.conf",
